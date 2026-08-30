@@ -1,0 +1,13 @@
+# Wally
+Packages/
+DevPackages/
+wally.lock
+
+# Rojo / Roblox Studio build output
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+
+# OS / editor
+.DS_Store

@@ -1,0 +1,10 @@
+[package]
+name = "venignuss/gamestate"
+version = "0.1.0"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "shared"
+license = "MIT"
+description = "A single source of truth for your game's state, with built-in replication and safe client-to-server writes."
+
+[dependencies]
+# none currently
