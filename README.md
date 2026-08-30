@@ -124,7 +124,7 @@ Every node supports these — see "The mental model" above for the details.
 - **`node(value)`** — write a value.
 - **`node(nil)`** — explicitly clear the value.
 - **`node(fn)`** — write based on the current value: `fn` receives the old value and its return becomes the new value.
-- **`node.Update(fn)`** — identical to `node(fn)`, just reads more clearly at a glance when that's all you're doing.
+- **`node.Update(fn)`** — identical to `node(fn)`, just provides type-checking.
 
 ### Subscriptions (available everywhere)
 
@@ -156,7 +156,7 @@ All four only work on nodes that are currently array- or table-shaped (or empty/
 - **`node.addSync(player)`** (or a list of players) — starts pushing this node's value, and every future change to it, to that player's client. Call this to get *anything* from server to client at all — nothing replicates unless you explicitly `addSync` it.
 - **`node.removeSync(player)`** — stops syncing to a player who's still connected. **You don't need this for players who are leaving** — see below.
 - **`node.setSync(players)`** — sets the exact list of who should be synced, adding and removing as needed in one call. Handy for things like a party or team roster that changes as a whole.
-- **`node.allowClientBroadcast(player, validateData?, clientPath?)`** — the *only* way a client can get data into server-trusted state. The client calls `broadcastToServer()` on their end; you decide here whether to accept it. `validateData(value)` should return `true` to accept the write or `false`/`nil` to reject it.
+- **`node.allowClientBroadcast(player, validateData?, clientPath?)`** — the *only* way a client can get data into server-trusted state. The client calls `broadcastToServer()` on their end; you decide here whether to accept it. `validateData(value)` should return `true` to accept the write or `false`/`nil` to reject it. ClientPath should be an `array` that holds the keys, from top to bottom. For example, if the client's GameState will be broadcasting GameState.EquippedItems.Hat, clientPath should be `{"EquippedItems", "Hat"}`. If no clientPath is provided, the server path will be used.
 - **`node.disallowClientBroadcast(player)`** — revokes that permission for a player who's still connected. Same note as `removeSync` — not needed for players leaving.
 
 ### Client-only: sending writes to the server
@@ -174,6 +174,8 @@ All four only work on nodes that are currently array- or table-shaped (or empty/
 
 - **`validateData` isn't optional in spirit, even though it's optional in the API.** Skipping it means that player can write *anything* correctly-shaped to that path, no restrictions at all. You'll get a warning in the output every time you register a broadcast target without one — treat that warning as a checklist item, not noise to ignore.
 
+- **`validateData` functions can be seen by exploiters. Consider moving `ServerNode` to ServerScriptService and adjusting the require paths if you wish to change that.
+
 - **When a player leaves, you don't need to clean up their sync or broadcast registrations yourself — that's automatic.** Anything set up through `addSync` or `allowClientBroadcast` for that player gets torn down the moment they disconnect. You only need to call `removeSync`/`disallowClientBroadcast` yourself if you want to revoke access from someone who's *still connected*.
 
   This automatic cleanup is specifically about sync/broadcast *registrations*. It doesn't mean a player's actual data disappears — that's a separate decision you make in your own game logic (e.g. writing `nil` to clear their state, or leaving it in place if you want it to persist for when they rejoin).
@@ -187,22 +189,6 @@ All four only work on nodes that are currently array- or table-shaped (or empty/
 - **There's a rate limit and a payload size/depth limit on client broadcasts, by design.** If a client's writes seem to be silently getting dropped, check the server output — rejected broadcasts always log a warning explaining why (rate-limited, oversized, failed validation, etc.), they don't fail silently without a trace.
 
 - **Don't call `broadcastToServer()` in a tight, unthrottled loop.** Nothing stops you locally, and it won't break anything (the server's own limits catch the excess), but it's still wasted client-side memory and network traffic for no benefit — batch your changes and broadcast once.
-
-## Status
-
-Fixed and verified through real Roblox Studio testing:
-- A malformed client broadcast permanently breaking server-side sync/broadcast processing.
-- Payload size/depth limits and a token-bucket rate limiter on client broadcasts.
-- A memory leak from weak-table/closure interaction in Luau.
-- A node auto-detach race that could silently break `addSync`/`allowClientBroadcast` registrations.
-- Bugs in `Insert`/`RemoveValue`/`RemoveIndex`/`Merge`.
-
-Explicitly still open:
-- `DetachedChildren`'s weak-value bucket is reasoned-through-safe but not empirically stress-tested the way other weak tables were.
-- No test yet for a player disconnecting mid-broadcast/mid-sync.
-- Rate-limiter and payload-limit constants are placeholder values, not derived from real traffic — tune them for your game.
-
-Issues and PRs welcome.
 
 ## License
 
