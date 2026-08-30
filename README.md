@@ -24,7 +24,7 @@ Add it to your `wally.toml`:
 
 ```toml
 [dependencies]
-GameState = "your-scope/gamestate@0.1.0"
+GameState = "venignuss/gamestate@0.1.0"
 ```
 
 Then:
@@ -48,15 +48,22 @@ local GameState = require(path.to.GameState)
 
 Players.PlayerAdded:Connect(function(player)
     -- Set up their state
-    GameState.Players[player.UserId].Coins(0)
-    GameState.Players[player.UserId].Inventory.Items({})
+    GameState.Players[player.UserId].Inventory.Hats({"TopHat", "PartyHat"})
+    GameState.Players[player.UserId].EquippedHat("None")
 
     -- Replicate their own data to them
     GameState.Players[player.UserId].addSync(player)
 
-    -- Let them spend coins from their own client, but only if they can afford it
-    GameState.Players[player.UserId].Coins.allowClientBroadcast(player, function(newAmount)
-        return typeof(newAmount) == "number" and newAmount >= 0
+    -- Let them equip any hat from their own inventory, but nothing they don't own
+    GameState.Players[player.UserId].EquippedHat.allowClientBroadcast(player, function(hatId)
+        if typeof(hatId) ~= "string" then
+            return false
+        end
+        if hatId == "None" then
+            return true -- unequipping is always allowed
+        end
+        local owned = GameState.Players[player.UserId].Inventory.Hats()
+        return owned ~= nil and table.find(owned, hatId) ~= nil
     end)
 end)
 ```
@@ -67,11 +74,15 @@ end)
 local GameState = require(path.to.GameState)
 local myUserId = Players.LocalPlayer.UserId
 
-print(GameState.Players[myUserId].Coins())  -- reads whatever the server has synced so far
+print(GameState.Players[myUserId].EquippedHat())  -- reads whatever the server has synced so far
 
-GameState.Players[myUserId].Coins.Changed(function(old, new)
-    print("Coins changed from", old, "to", new)
+GameState.Players[myUserId].EquippedHat.Changed(function(old, new)
+    print("Equipped hat changed from", old, "to", new)
 end)
+
+-- Ask the server to equip a different hat from this player's own inventory
+GameState.Players[myUserId].EquippedHat("PartyHat")
+GameState.Players[myUserId].EquippedHat.broadcastToServer()
 ```
 
 The module figures out on its own whether it's running on the server or the client and gives you the right version — you always just `require` the same thing.
