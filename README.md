@@ -1,6 +1,6 @@
 # GameState
 
-[![Wally](https://img.shields.io/badge/wally-your--scope%2Fgamestate-red)](https://wally.run/package/your-scope/gamestate)
+[![Wally](https://img.shields.io/badge/wally-venignuss%2Fgamestate-blue)](https://wally.run/package/venignuss/gamestate)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 A single source of truth for your game's state, shared between server and client, with built-in replication and safe client-to-server writes.
