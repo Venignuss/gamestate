@@ -21,12 +21,13 @@ local PendingSync: { [Player]: { any } } = {}
 -- capture the node itself, e.g. disconnect functions) lives as FIELDS DIRECTLY ON
 -- EACH NODE (_syncConnections / _broadcastRegistry), not in an external table keyed
 -- by node. Storing such a closure as a VALUE in an external table that's ALSO
--- weak-keyed BY that same node does not actually get collected in Luau - confirmed
--- by direct testing - even though it looks like the standard "weak key" idiom.
--- Putting the data on the node itself instead makes it a self-contained cycle
--- (node -> node's own field -> closure -> node), which Luau's GC does collect
--- correctly (the same way a node's own metatable, which also closes over the
--- node, is already collectible).
+-- weak-keyed BY that same node does not actually get collected in Luau, even
+-- though it looks like the standard "weak key" idiom - the closure holds its
+-- own strong reference back to the node, so the weak key never loses its only
+-- reference. Putting the data on the node itself instead makes it a
+-- self-contained cycle (node -> node's own field -> closure -> node), which
+-- Luau's GC does collect correctly (the same way a node's own metatable,
+-- which also closes over the node, is already collectible).
 --
 -- These two tables exist ONLY so the Heartbeat loop and PlayerRemoving cleanup
 -- can enumerate "which nodes currently have a registration" without walking the
@@ -44,16 +45,25 @@ end
 BroadcastRemote = BroadcastRemote :: RemoteEvent
 local PendingBroadcasts: { [Player]: { any } } = {}
 
-local MAX_BROADCASTS_PER_PLAYER_PER_FRAME = 20 -- placeholder - confirm/adjust
+-- Frame-level cap on how many broadcast entries a single player can enqueue per
+-- Heartbeat. 20 comfortably covers legitimate UI-driven writes (a settings panel,
+-- inventory drag-drop, a lever pull) while bounding worst-case per-frame processing
+-- cost. Raise it if your game has denser client-write patterns (e.g. real-time
+-- drawing/building tools).
+local MAX_BROADCASTS_PER_PLAYER_PER_FRAME = 20
 local MAX_BROADCAST_PATH_LENGTH = 16
 local MAX_BROADCAST_DATA_DEPTH = 16
 local MAX_BROADCAST_DATA_NODES = 500 -- total values walked; bounds cost cheaply, exits early
+local MAX_BROADCAST_STRING_LENGTH = 2000 -- max length of any single string value in a payload;
+	-- MAX_BROADCAST_DATA_NODES counts table entries, not bytes, so without this a single
+	-- oversized string leaf would pass the node-count check untouched
 
 -- Token bucket limiting raw BroadcastRemote:FireServer call *frequency*, independent
 -- of payload size/shape - MAX_BROADCASTS_PER_PLAYER_PER_FRAME/size checks above don't
 -- stop a client from calling FireServer itself extremely rapidly with small/empty
 -- payloads, and each call has real server-side dispatch cost regardless of content.
--- Placeholder values - tune BROADCAST_BUCKET_CAPACITY (max burst) and
+-- Defaults allow short legitimate bursts (a flurry of clicks) while capping sustained
+-- spam at 5 calls/sec - tune BROADCAST_BUCKET_CAPACITY (max burst) and
 -- BROADCAST_BUCKET_REFILL_PER_SECOND (sustained rate) to your game's actual needs.
 local BROADCAST_BUCKET_CAPACITY = 10
 local BROADCAST_BUCKET_REFILL_PER_SECOND = 5
@@ -118,11 +128,14 @@ local function pathStartsWith(path: {any}, prefix: {any}): boolean
 	return true
 end
 
-local function isWithinDataLimits(data: any, maxDepth: number, maxNodes: number): boolean
+local function isWithinDataLimits(data: any, maxDepth: number, maxNodes: number, maxStringLength: number): boolean
 	local nodeCount = 0
 	local function walk(value: any, depth: number): boolean
 		nodeCount += 1
 		if nodeCount > maxNodes then
+			return false
+		end
+		if typeof(value) == "string" and #value > maxStringLength then
 			return false
 		end
 		if typeof(value) ~= "table" then
@@ -425,7 +438,7 @@ BroadcastRemote.OnServerEvent:Connect(function(player: Player, queue: { any })
 			warn("[GameState] "..player.Name.." sent an oversized broadcast path, discarding")
 			continue
 		end
-		if not isWithinDataLimits(entry.data, MAX_BROADCAST_DATA_DEPTH, MAX_BROADCAST_DATA_NODES) then
+		if not isWithinDataLimits(entry.data, MAX_BROADCAST_DATA_DEPTH, MAX_BROADCAST_DATA_NODES, MAX_BROADCAST_STRING_LENGTH) then
 			warn("[GameState] "..player.Name.." sent an oversized broadcast payload, discarding")
 			continue
 		end

@@ -217,9 +217,17 @@ Everything else in the module works unchanged — this only affects the handful 
 
 - **Reads return copies, not references.** Grabbing a table with `node()` and mutating it in place does nothing to the stored state — see "The mental model" above.
 
-- **There's a rate limit and a payload size/depth limit on client broadcasts, by design.** If a client's writes seem to be silently getting dropped, check the server output — rejected broadcasts always log a warning explaining why (rate-limited, oversized, failed validation, etc.), they don't fail silently without a trace.
+- **There's a rate limit and a payload size/depth/string-length limit on client broadcasts, by design.** If a client's writes seem to be silently getting dropped, check the server output — rejected broadcasts always log a warning explaining why (rate-limited, oversized, failed validation, etc.), they don't fail silently without a trace. The size limit also caps the length of any individual string value, not just table shape — a single giant string can't be used to smuggle an oversized payload past the node/depth checks.
 
 - **Don't call `broadcastToServer()` in a tight, unthrottled loop.** Nothing stops you locally, and it won't break anything (the server's own limits catch the excess), but it's still wasted client-side memory and network traffic for no benefit — batch your changes and broadcast once.
+
+## Known limitations
+
+- **Reading a table-shaped node walks its entire subtree, every time, with no caching between writes.** A leaf read (`GameState.Round.TimeRemaining()`) is cheap; reading a wide/deep node frequently (e.g. every frame, or in a loop) is not — it rebuilds a fresh snapshot of every descendant on each call. This is fine for the round-scoped/live state GameState is meant for; it's not meant to hold bulk data like large inventories (see "GameState vs. player data / persistence libraries" above). If you need to read a large subtree repeatedly and cheaply, cache the result yourself between writes rather than calling the node on every access.
+
+- **There's no automated test suite yet.** The replication/validation path (rate limiting, size/depth/string-length checks, `validateData`) is the part most worth testing before relying on this in a live game — if you're evaluating GameState for production use, read that code yourself rather than taking the comments on faith, and contributions of tests are welcome.
+
+- **`allowClientBroadcast` registrations are matched against incoming messages with a linear scan.** Fine for a modest number of registered broadcast targets (the common case — a handful of interactable objects, settings panels, etc.); if your game registers broadcast permissions per-item across a large, dynamic set (e.g. per-item in a big inventory), that scan will show up in a profiler before anything else here does.
 
 ## License
 

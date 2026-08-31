@@ -6,11 +6,12 @@ local HTTPS = game:GetService("HttpService")
 -- keyed by node. This matters: a closure that captures `node` and is stored as
 -- a VALUE in an EXTERNAL table that's ALSO weak-keyed BY that same node does not
 -- get collected in Luau, even though it structurally looks like the standard
--- "weak key" pattern - confirmed by direct testing against the Luau runtime.
--- Storing the same closure as a field ON the node itself makes it a
--- self-contained cycle instead (node -> node's own field -> closure -> node),
--- which Luau's cycle-collecting GC handles correctly - this is the same reason
--- a node's own metatable (which closes over the node) is collectible.
+-- "weak key" pattern - the closure holds its own strong reference back to the
+-- node, so the weak key never actually loses its only reference. Storing the
+-- same closure as a field ON the node itself makes it a self-contained cycle
+-- instead (node -> node's own field -> closure -> node), which Luau's
+-- cycle-collecting GC handles correctly - the same reason a node's own
+-- metatable (which closes over the node) is collectible.
 
 local Node = {}
 Node.NIL = setmetatable({}, {
@@ -27,8 +28,9 @@ Parent, Key, _isPhantom which the user is not meant to access won't be defined.
 
 Luau's type-checker does not support intersecting a type {[string]: number} with {Changed: function}
 and Changed is not recognized as a function. This is why types are being built through the
-type function, to avoid having to intersect different types. It's a tedious workaround, but
-unless Luau's typechecker is updated, this is the only way I thought of for going around this.
+type function, to avoid having to intersect different types. It's a workaround for that
+typechecker limitation, and can likely be simplified if/when Luau's handling of this kind
+of intersection changes.
 
 ]]
 
