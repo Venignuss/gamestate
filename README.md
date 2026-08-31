@@ -1,7 +1,7 @@
 # GameState
 
-[![Wally](https://img.shields.io/badge/wally-venignuss%2Fgamestate-blue)](https://wally.run/package/venignuss/gamestate)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Wally](https://img.shields.io/badge/wally-venignuss%2Fgamestate-purple)](https://wally.run/package/venignuss/gamestate)
+[![License: MIT](https://img.shields.io/badge/license-MIT-purple.svg)](LICENSE)
 
 A single source of truth for your game's state, shared between server and client, with built-in replication and safe client-to-server writes.
 
@@ -12,9 +12,17 @@ Most Roblox games end up with state scattered across a dozen different systems �
 `GameState` collapses all of that into one nested structure you read and write like a plain Lua table. You don't design a schema up front — you just start reading and writing paths, and the structure builds itself as you go, replicating to clients and accepting safe writes back automatically:
 
 ```lua
-GameState.Players[player.UserId].Coins(100)
-print(GameState.Players[player.UserId].Coins()) --> 100
+GameState.Round.TimeRemaining(120)
+print(GameState.Round.TimeRemaining()) --> 120
 ```
+
+## GameState vs. player data / persistence libraries
+
+`GameState` is **not** a player data management library, and it's not a replacement for things like ProfileService or Scribe. Those libraries solve a different problem: getting a player's data reliably into and out of `DataStore`: session-locking, retries, versioning/migrations, save-on-leave, and so on. `GameState` doesn't touch `DataStore` at all and has no concept of a "player profile."
+
+What `GameState` solves is **replication and controlled client writes for whatever's currently in memory** — server-authoritative state that needs to live on clients too, and sometimes accept writes back from them. That's a layer above persistence, not a substitute for it. Plenty of what you'd put in `GameState` is round-scoped or otherwise never needs to touch a `DataStore` at all — a door being open, a boss's current health, how much time is left, who's currently in a party.
+
+The two work well together when you do have persistent data: load a player's profile with your persistence library of choice when they join, mirror the fields you want live and replicated into `GameState` (e.g. `GameState.Players[player.UserId].Coins(profile.Data.Coins)`), let `GameState` handle sync/broadcast for the rest of the session, and read back from it whenever the profile needs to save.
 
 ## Install
 
@@ -46,50 +54,44 @@ Copy the `src/` contents into a ModuleScript named `GameState` in `ReplicatedSto
 ```lua
 local GameState = require(path.to.GameState)
 
-Players.PlayerAdded:Connect(function(player)
-    -- Set up their state
-    GameState.Players[player.UserId].Inventory.Hats({"TopHat", "PartyHat"})
-    GameState.Players[player.UserId].EquippedHat("None")
+-- Somewhere that sets a zone up (e.g. when a level loads)
+GameState.Zones[zoneId].DoorOpen(false)
 
-    -- Replicate their own data to them
-    GameState.Players[player.UserId].addSync(player)
+-- When a player enters this zone (via a trigger, region check, whatever you use)
+local function onPlayerEnteredZone(player, zoneId)
+    -- Replicate this zone's state to them
+    GameState.Zones[zoneId].addSync(player)
 
-    -- Let them equip any hat from their own inventory, but nothing they don't own
-    GameState.Players[player.UserId].EquippedHat.allowClientBroadcast(player, function(hatId)
-        if typeof(hatId) ~= "string" then
-            return false
-        end
-        if hatId == "None" then
-            return true -- unequipping is always allowed
-        end
-        local owned = GameState.Players[player.UserId].Inventory.Hats()
-        return owned ~= nil and table.find(owned, hatId) ~= nil
+    -- Let anyone standing in this zone pull the lever to open the door -
+    -- but only open it, never close it, from the client
+    GameState.Zones[zoneId].DoorOpen.allowClientBroadcast(player, function(isOpen)
+        return isOpen == true
     end)
-end)
+end
 ```
 
 **Client** (in a LocalScript, after requiring the same module):
 
 ```lua
 local GameState = require(path.to.GameState)
-local myUserId = Players.LocalPlayer.UserId
+local zoneId = "Vault"
 
-print(GameState.Players[myUserId].EquippedHat())  -- reads whatever the server has synced so far
+print(GameState.Zones[zoneId].DoorOpen())  -- reads whatever the server has synced so far
 
-GameState.Players[myUserId].EquippedHat.Changed(function(old, new)
-    print("Equipped hat changed from", old, "to", new)
+GameState.Zones[zoneId].DoorOpen.Changed(function(old, new)
+    print("Door", zoneId, new and "opened" or "closed")
 end)
 
--- Ask the server to equip a different hat from this player's own inventory
-GameState.Players[myUserId].EquippedHat("PartyHat")
-GameState.Players[myUserId].EquippedHat.broadcastToServer()
+-- Pull the lever
+GameState.Zones[zoneId].DoorOpen(true)
+GameState.Zones[zoneId].DoorOpen.broadcastToServer()
 ```
 
 The module figures out on its own whether it's running on the server or the client and gives you the right version — you always just `require` the same thing.
 
 ## The mental model
 
-Every point in the tree — `GameState`, `GameState.Players`, `GameState.Players[someId].Coins` — is a **node**. A node is called like a function to read or write it:
+Every point in the tree — `GameState`, `GameState.Zones`, `GameState.Zones[someId].DoorOpen` — is a **node**. A node is called like a function to read or write it:
 
 ```lua
 node()          -- read: returns the current value (nil if it was never set)
@@ -101,17 +103,17 @@ node(function(old) return old + 1 end)  -- write: update based on the current va
 Indexing into a node with `.` or `[]` gets you the child node at that key, creating it on the spot if it doesn't exist yet:
 
 ```lua
-GameState.Players[player.UserId].Inventory.Items[1]("Sword")
+GameState.Zones[zoneId].Chest.Items[1]("Sword")
 ```
 
-You never "declare" `Players`, then `[userId]`, then `Inventory`, then `Items` — you just write to the full path and every level along the way gets created automatically.
+You never "declare" `Zones`, then `[zoneId]`, then `Chest`, then `Items` — you just write to the full path and every level along the way gets created automatically.
 
 Reading a node that holds a table gives you back a **plain Lua table snapshot**, not a live reference. Changing that table doesn't change what's stored — write it back (or use `Merge`/`Insert`/`RemoveValue`/`RemoveIndex`, see below) if you want the change to stick:
 
 ```lua
-local items = GameState.Players[player.UserId].Inventory.Items()
+local items = GameState.Zones[zoneId].Chest.Items()
 table.insert(items, "Shield")   -- this does nothing to the actual stored state
-GameState.Players[player.UserId].Inventory.Items(items)  -- this is what actually saves it
+GameState.Zones[zoneId].Chest.Items(items)  -- this is what actually saves it
 ```
 
 ## Function reference
@@ -124,14 +126,14 @@ Every node supports these — see "The mental model" above for the details.
 - **`node(value)`** — write a value.
 - **`node(nil)`** — explicitly clear the value.
 - **`node(fn)`** — write based on the current value: `fn` receives the old value and its return becomes the new value.
-- **`node.Update(fn)`** — identical to `node(fn)`, just provides type-checking.
+- **`node.Update(fn)`** — identical to `node(fn)`, just reads more clearly at a glance when that's all you're doing.
 
 ### Subscriptions (available everywhere)
 
 All of these return a **disconnect function** — call it to stop listening:
 
 ```lua
-local disconnect = GameState.Players[userId].Coins.Changed(function(old, new) end)
+local disconnect = GameState.Round.TimeRemaining.Changed(function(old, new) end)
 disconnect()
 ```
 
@@ -140,7 +142,7 @@ disconnect()
 - **`node.ChildAdded(callback)`** — fires only when a direct child goes from not existing to existing. `callback(key, newValue)`.
 - **`node.ChildRemoved(callback)`** — fires only when a direct child goes from existing to being cleared. `callback(key, lastValue)`.
 
-**Timing to know about:** these callbacks fire *before* the write is actually applied internally. The `old`/`new` values you're given are correct, but if your callback ignores those and reads the node again itself (`GameState.Players[userId].Coins()` from inside that same `Coins.Changed` callback), you'll get the *old* value, not the one being written. Always use the arguments the callback hands you.
+**Timing to know about:** these callbacks fire *before* the write is actually applied internally. The `old`/`new` values you're given are correct, but if your callback ignores those and reads the node again itself (`GameState.Round.TimeRemaining()` from inside that same `TimeRemaining.Changed` callback), you'll get the *old* value, not the one being written. Always use the arguments the callback hands you.
 
 ### Bulk mutation helpers (available everywhere)
 
@@ -156,16 +158,47 @@ All four only work on nodes that are currently array- or table-shaped (or empty/
 - **`node.addSync(player)`** (or a list of players) — starts pushing this node's value, and every future change to it, to that player's client. Call this to get *anything* from server to client at all — nothing replicates unless you explicitly `addSync` it.
 - **`node.removeSync(player)`** — stops syncing to a player who's still connected. **You don't need this for players who are leaving** — see below.
 - **`node.setSync(players)`** — sets the exact list of who should be synced, adding and removing as needed in one call. Handy for things like a party or team roster that changes as a whole.
-- **`node.allowClientBroadcast(player, validateData?, clientPath?)`** — the *only* way a client can get data into server-trusted state. The client calls `broadcastToServer()` on their end; you decide here whether to accept it. `validateData(value)` should return `true` to accept the write or `false`/`nil` to reject it. ClientPath should be an `array` that holds the keys, from top to bottom. For example, if the client's GameState will be broadcasting GameState.EquippedItems.Hat, clientPath should be `{"EquippedItems", "Hat"}`. If no clientPath is provided, the server path will be used.
+- **`node.allowClientBroadcast(player, validateData?, clientPath?)`** — the *only* way a client can get data into server-trusted state. The client calls `broadcastToServer()` on their end; you decide here whether to accept it. `validateData(value)` should return `true` to accept the write or `false`/`nil` to reject it.
+
+  `clientPath` is optional, and only needed if the path the client will use to address this node doesn't match its real path server-side (normally they match, since both sides build the same tree). Pass the path array the client will actually broadcast under, and the server will match incoming writes against that instead of the node's real location — useful if you're deliberately structuring the server tree differently from what the client sees.
+
 - **`node.disallowClientBroadcast(player)`** — revokes that permission for a player who's still connected. Same note as `removeSync` — not needed for players leaving.
+
+### In case you want your server code to be server-only
+
+By default, everything under `GameState` — including `ServerNode.lua` and every `validateData` function you write — lives in `ReplicatedStorage`, which means it's fully visible to any client, decompilable by exploit tools. For most games that's fine. But your `validateData` functions are exactly what an exploiter would want to read: the precise bounds, whitelists, and conditions your server actually enforces. If you'd rather that logic stay invisible, you can move `Server` into `ServerScriptService`, which clients can't see into at all.
+
+If you want to do this:
+
+1. **In Studio, move the `Server` ModuleScript out of `ReplicatedStorage.GameState` and into `ServerScriptService`**, as its own top-level ModuleScript (e.g. `ServerScriptService.GameStateServer`). `Client` and the root `GameState` module stay in `ReplicatedStorage` exactly as they are.
+
+2. **Update the root `GameState` module's `require(script.Server)`.** It currently assumes `Server` is a child of itself — once `Server` moves out, that line no longer resolves. Point it at the new location instead:
+
+   ```lua
+   if RunService:IsServer() then
+       return require(game:GetService("ServerScriptService").GameStateServer)
+   else
+       return require(script.Client)
+   end
+   ```
+
+3. **Update the two relative lookups inside `ServerNode.lua`.** It currently reaches `Client` and `SharedNode` via `script.Parent.Parent.Client`, which assumes `Server` sits right next to `Client` under the same `GameState` folder. That assumption breaks once `Server` moves, so both need to become absolute references instead:
+
+   ```lua
+   local ClientFolder = game:GetService("ReplicatedStorage").GameState.Client
+   ```
+
+   and the same for the `SharedNode` require at the top of the file.
+
+Everything else in the module works unchanged — this only affects the handful of lines that navigate the tree by relative position.
 
 ### Client-only: sending writes to the server
 
 - **`node.broadcastToServer()`** — sends this node's *current* value to the server for consideration. Write locally first so your own client updates immediately, then call this to ask the server to accept the same change:
 
   ```lua
-  GameState.Players[myUserId].Coins.Update(function(old) return old - 10 end)
-  GameState.Players[myUserId].Coins.broadcastToServer()
+  GameState.Zones[zoneId].DoorOpen(true)
+  GameState.Zones[zoneId].DoorOpen.broadcastToServer()
   ```
 
   This only does anything if the server called `allowClientBroadcast` for this exact path and player, and only takes effect if `validateData` accepts it — otherwise the server just quietly discards it. It also doesn't apply instantly: it's queued and sent roughly once per frame, not the moment you call it.
@@ -173,8 +206,6 @@ All four only work on nodes that are currently array- or table-shaped (or empty/
 ## Things to be careful of
 
 - **`validateData` isn't optional in spirit, even though it's optional in the API.** Skipping it means that player can write *anything* correctly-shaped to that path, no restrictions at all. You'll get a warning in the output every time you register a broadcast target without one — treat that warning as a checklist item, not noise to ignore.
-
-- **`validateData` functions can be seen by exploiters. Consider moving `ServerNode` to ServerScriptService and adjusting the require paths if you wish to change that.
 
 - **When a player leaves, you don't need to clean up their sync or broadcast registrations yourself — that's automatic.** Anything set up through `addSync` or `allowClientBroadcast` for that player gets torn down the moment they disconnect. You only need to call `removeSync`/`disallowClientBroadcast` yourself if you want to revoke access from someone who's *still connected*.
 
