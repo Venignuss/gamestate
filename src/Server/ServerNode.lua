@@ -6,11 +6,6 @@ if RunService:IsClient() then
 	return {} :: any
 end
 
--- PATCHED FOR PACKAGING: previously this WaitForChild'd on remotes that were
--- hand-placed in Studio. Wally packages ship pure Luau source, not Instances,
--- so there's nothing to WaitForChild until something creates them. The server
--- is the only realm with exactly one instance, so it's the safe place to do
--- that creation (find-or-create is idempotent across Studio hot-reloads).
 local ClientFolder = script.Parent.Parent.Client
 
 local SyncRemote = ClientFolder:FindFirstChild("SyncRemote") :: RemoteEvent?
