@@ -394,11 +394,6 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	local isPhantom = (data == nil)
 	local newNode = setmetatable({}, {
 		__index = function(t: any, i)
-			-- Check if we are trying to access a function
-			if typeof(rawget(t, i)) == "function" then
-				return rawget(t, i)
-			end
-
 			-- Check if we are trying to access the NodeTypeBase property directly
 			if i == "content" then
 				return rawget(t, "content")
@@ -406,6 +401,21 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 				return rawget(t, "Key")
 			elseif i == "Parent" then
 				return rawget(t, "Parent")
+			end
+
+			-- A key that collides with a reserved method name (Insert, Merge, Changed, ...)
+			-- is ambiguous - see the "Reserved keys" note in the README - but if a REAL child
+			-- already exists under this key, that data must win over the method, or previously
+			-- written data becomes permanently unreachable through dot/bracket indexing the
+			-- moment its key happens to match an API method name.
+			local rawContent = rawget(t, "content")
+			if typeof(rawContent) == "table" and rawContent[i] ~= nil then
+				return rawContent[i]
+			end
+
+			-- Check if we are trying to access a function
+			if typeof(rawget(t, i)) == "function" then
+				return rawget(t, i)
 			end
 
 			-- We are now trying to access another node. This is only possible if the current node is
@@ -567,7 +577,24 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 				elseif typeof(data) ~= "table" then
 					t.content = data
 				else
-					for i,v in data do
+					for i, v in data do
+						-- A key here that collides with a reserved node method (Insert, Merge,
+						-- Changed, ...) never actually reaches the "create a child" branch in
+						-- __index above - the method resolves first, so t[i](v, ...) below calls
+						-- that method with v as an argument instead of writing v to a child
+						-- named i. This only catches it when it happens through a whole-table
+						-- write like this one, where i and v are both already known values -
+						-- a bare `node.Insert(x)` call made directly by a developer is exactly
+						-- as valid as this collision looks from here, so it can't be flagged
+						-- without also flagging every correct use of the API; see the "Reserved
+						-- keys" section in the README.
+						local hasExistingChild = typeof(t.content) == "table" and rawget(t.content, i) ~= nil
+						if not hasExistingChild and typeof(rawget(t, i)) == "function" then
+							warn("[GameState] Writing key '"..tostring(i).."' under '"..tostring(t.Key)..
+								"' - this collides with a reserved GameState method name, so '"..
+								tostring(i).."' will be called as that method instead of stored as "..
+								"a child. Rename the key, or see the README's 'Reserved keys' section.")
+						end
 						t[i](v, table.clone(firedKeyChangedCbs), table.clone(firedChangedCbs))
 					end
 					-- Remove removed keys

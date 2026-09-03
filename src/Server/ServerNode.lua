@@ -15,7 +15,8 @@ if not SyncRemote then
 	SyncRemote.Parent = ClientFolder
 end
 SyncRemote = SyncRemote :: RemoteEvent
-local PendingSync: { [Player]: { any } } = {}
+type PendingSyncNode = { value: { path: {any}, value: any }?, children: { [any]: PendingSyncNode }? }
+local PendingSync: { [Player]: PendingSyncNode } = {}
 
 -- The actual per-player sync/broadcast bookkeeping (which includes closures that
 -- capture the node itself, e.g. disconnect functions) lives as FIELDS DIRECTLY ON
@@ -45,40 +46,58 @@ end
 BroadcastRemote = BroadcastRemote :: RemoteEvent
 local PendingBroadcasts: { [Player]: { any } } = {}
 
--- Frame-level cap on how many broadcast entries a single player can enqueue per
--- Heartbeat. 20 comfortably covers legitimate UI-driven writes (a settings panel,
--- inventory drag-drop, a lever pull) while bounding worst-case per-frame processing
--- cost. Raise it if your game has denser client-write patterns (e.g. real-time
--- drawing/building tools).
-local MAX_BROADCASTS_PER_PLAYER_PER_FRAME = 20
-local MAX_BROADCAST_PATH_LENGTH = 16
-local MAX_BROADCAST_DATA_DEPTH = 16
-local MAX_BROADCAST_DATA_NODES = 500 -- total values walked; bounds cost cheaply, exits early
-local MAX_BROADCAST_STRING_LENGTH = 2000 -- max length of any single string value in a payload;
-	-- MAX_BROADCAST_DATA_NODES counts table entries, not bytes, so without this a single
-	-- oversized string leaf would pass the node-count check untouched
+-- These are tunable via GameState.configure({...}) below rather than editing the locals
+-- directly - this module lives inside Packages/ once installed via Wally, and editing the
+-- values in place here gets silently overwritten on the next `wally update`.
+local Config = {
+	-- Frame-level cap on how many broadcast entries a single player can enqueue per
+	-- Heartbeat. 20 comfortably covers legitimate UI-driven writes (a settings panel,
+	-- inventory drag-drop, a lever pull) while bounding worst-case per-frame processing
+	-- cost. Raise it if your game has denser client-write patterns (e.g. real-time
+	-- drawing/building tools).
+	MAX_BROADCASTS_PER_PLAYER_PER_FRAME = 20,
+	MAX_BROADCAST_PATH_LENGTH = 16,
+	MAX_BROADCAST_DATA_DEPTH = 16,
+	MAX_BROADCAST_DATA_NODES = 500, -- total values walked; bounds cost cheaply, exits early
+	-- Max length of any single string value in a payload; MAX_BROADCAST_DATA_NODES counts
+	-- table entries, not bytes, so without this a single oversized string leaf would pass
+	-- the node-count check untouched.
+	MAX_BROADCAST_STRING_LENGTH = 2000,
+	-- Token bucket limiting raw BroadcastRemote:FireServer call *frequency*, independent of
+	-- payload size/shape - the limits above don't stop a client from calling FireServer
+	-- itself extremely rapidly with small/empty payloads, and each call has real
+	-- server-side dispatch cost regardless of content. Defaults allow short legitimate
+	-- bursts (a flurry of clicks) while capping sustained spam at 5 calls/sec.
+	BROADCAST_BUCKET_CAPACITY = 10,
+	BROADCAST_BUCKET_REFILL_PER_SECOND = 5,
+}
 
--- Token bucket limiting raw BroadcastRemote:FireServer call *frequency*, independent
--- of payload size/shape - MAX_BROADCASTS_PER_PLAYER_PER_FRAME/size checks above don't
--- stop a client from calling FireServer itself extremely rapidly with small/empty
--- payloads, and each call has real server-side dispatch cost regardless of content.
--- Defaults allow short legitimate bursts (a flurry of clicks) while capping sustained
--- spam at 5 calls/sec - tune BROADCAST_BUCKET_CAPACITY (max burst) and
--- BROADCAST_BUCKET_REFILL_PER_SECOND (sustained rate) to your game's actual needs.
-local BROADCAST_BUCKET_CAPACITY = 10
-local BROADCAST_BUCKET_REFILL_PER_SECOND = 5
+-- Lets a game override any of the limits above without touching library source, e.g.
+--   GameState.configure({ MAX_BROADCASTS_PER_PLAYER_PER_FRAME = 40 })
+-- Server-only - there's nothing to configure on the client. Unknown keys are ignored with a
+-- warning rather than silently accepted, to catch typos.
+local function configure(overrides: { [string]: number })
+	for key, value in overrides do
+		if Config[key] == nil then
+			warn("[GameState] configure(): unknown option '"..tostring(key).."', ignoring")
+		else
+			Config[key] = value
+		end
+	end
+end
+
 local BroadcastBuckets: { [Player]: { tokens: number, lastRefill: number } } = setmetatable({}, {__mode = "k"}) :: any
 
 local function consumeBroadcastToken(player: Player): boolean
 	local bucket = BroadcastBuckets[player]
 	local now = os.clock()
 	if not bucket then
-		bucket = { tokens = BROADCAST_BUCKET_CAPACITY, lastRefill = now }
+		bucket = { tokens = Config.BROADCAST_BUCKET_CAPACITY, lastRefill = now }
 		BroadcastBuckets[player] = bucket
 	end
 	local elapsed = now - bucket.lastRefill
 	if elapsed > 0 then
-		bucket.tokens = math.min(BROADCAST_BUCKET_CAPACITY, bucket.tokens + elapsed * BROADCAST_BUCKET_REFILL_PER_SECOND)
+		bucket.tokens = math.min(Config.BROADCAST_BUCKET_CAPACITY, bucket.tokens + elapsed * Config.BROADCAST_BUCKET_REFILL_PER_SECOND)
 		bucket.lastRefill = now
 	end
 	if bucket.tokens >= 1 then
@@ -91,6 +110,7 @@ end
 local SharedNode = require(script.Parent.Parent.Client.SharedNode)
 local ServerNode = {}
 ServerNode.NIL = SharedNode.NIL
+ServerNode.configure = configure
 
 type ServerExtra = {
 	addSync: (Player) -> (),
@@ -106,14 +126,46 @@ export type ServerNode<T> = SharedNode.NodeType<T, ServerExtra>
 -- so callers building a Changed-callback closure around this don't need to
 -- capture `node` - a node's path is fixed for its lifetime (Key/Parent never
 -- change), so it's safe to compute once and reuse.
+--
+-- Dedup uses real path segments as actual table keys (nested one level per segment),
+-- not a stringified path. Path segments can be any Luau value - numbers, strings,
+-- booleans, or an Instance/table used as a dict key - and Lua's native key equality
+-- already handles all of those correctly. Stringifying first would reintroduce exactly
+-- the collisions this is meant to avoid: tostring(1) and tostring("1") are both "1", and
+-- tostring() on an Instance returns its .Name, which two different Instances can share.
+--
+-- A tree position can be a leaf (something was written to exactly this path), have
+-- children (something was written further down), or both at once in the same frame -
+-- so `value` and `children` are kept as separate fields on each node instead of one
+-- overwriting the other.
 local function queueSync(path: {any}, player: Player, value: any)
 	if not PendingSync[player] then
 		PendingSync[player] = {}
 	end
-	table.insert(PendingSync[player], {
-		path = path,
-		value = value,
-	})
+	local cursor = PendingSync[player]
+	for _, key in path do
+		if typeof(cursor.children) ~= "table" then
+			cursor.children = {}
+		end
+		if typeof(cursor.children[key]) ~= "table" then
+			cursor.children[key] = {}
+		end
+		cursor = cursor.children[key]
+	end
+	-- A later write to this exact path replaces the earlier one - only the most recent
+	-- value per path needs to reach the client within a single flush.
+	cursor.value = { path = path, value = value }
+end
+
+local function collectPendingSync(node: PendingSyncNode, out: { any })
+	if node.value ~= nil then
+		table.insert(out, node.value)
+	end
+	if node.children then
+		for _, child in node.children do
+			collectPendingSync(child, out)
+		end
+	end
 end
 
 local function pathStartsWith(path: {any}, prefix: {any}): boolean
@@ -339,11 +391,13 @@ task.spawn(function()
 
 		-- Syncing
 
-		for player, queue in PendingSync do
-			if #queue > 0 then
-				SyncRemote:FireClient(player, queue)
-				PendingSync[player] = {}
+		for player, tree in PendingSync do
+			local batch = {}
+			collectPendingSync(tree, batch)
+			if #batch > 0 then
+				SyncRemote:FireClient(player, batch)
 			end
+			PendingSync[player] = {}
 		end
 
 		-- Broadcasting
@@ -426,7 +480,7 @@ BroadcastRemote.OnServerEvent:Connect(function(player: Player, queue: { any })
 	end
 	local existing = #PendingBroadcasts[player]
 	for i, entry in queue do
-		if existing + i > MAX_BROADCASTS_PER_PLAYER_PER_FRAME then
+		if existing + i > Config.MAX_BROADCASTS_PER_PLAYER_PER_FRAME then
 			warn("[GameState] "..player.Name.." exceeded broadcast rate limit, dropping excess")
 			break
 		end
@@ -434,11 +488,11 @@ BroadcastRemote.OnServerEvent:Connect(function(player: Player, queue: { any })
 			warn("[GameState] "..player.Name.." sent a malformed broadcast entry, discarding")
 			continue
 		end
-		if #entry.path > MAX_BROADCAST_PATH_LENGTH then
+		if #entry.path > Config.MAX_BROADCAST_PATH_LENGTH then
 			warn("[GameState] "..player.Name.." sent an oversized broadcast path, discarding")
 			continue
 		end
-		if not isWithinDataLimits(entry.data, MAX_BROADCAST_DATA_DEPTH, MAX_BROADCAST_DATA_NODES, MAX_BROADCAST_STRING_LENGTH) then
+		if not isWithinDataLimits(entry.data, Config.MAX_BROADCAST_DATA_DEPTH, Config.MAX_BROADCAST_DATA_NODES, Config.MAX_BROADCAST_STRING_LENGTH) then
 			warn("[GameState] "..player.Name.." sent an oversized broadcast payload, discarding")
 			continue
 		end

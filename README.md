@@ -128,6 +128,14 @@ Every node supports these — see "The mental model" above for the details.
 - **`node(fn)`** — write based on the current value: `fn` receives the old value and its return becomes the new value.
 - **`node.Update(fn)`** — identical to `node(fn)`, just reads more clearly at a glance when that's all you're doing.
 
+**`GameState.NIL` — writing an explicit hole into an array.** A plain Lua table can't hold a real `nil` in the middle of an array — `{1, nil, 3}` either loses its length or collapses depending on how it's built. If you need a specific array position to be explicitly empty (as opposed to just shorter), write `GameState.NIL` at that position instead of `nil`:
+
+```lua
+GameState.Round.Bracket({ "Alice", GameState.NIL, "Charlie" })
+```
+
+`GameState` converts `NIL` back into a real `nil` internally when the value is stored, so `GameState.Round.Bracket()` reads back `{ "Alice", nil, "Charlie" }` with the hole preserved. You only need this for array holes — writing `nil` directly to a *dict* key or to a node itself works exactly as you'd expect and doesn't need `NIL`.
+
 ### Subscriptions (available everywhere)
 
 All of these return a **disconnect function** — call it to stop listening:
@@ -163,6 +171,22 @@ All four only work on nodes that are currently array- or table-shaped (or empty/
   `clientPath` is optional, and only needed if the path the client will use to address this node doesn't match its real path server-side (normally they match, since both sides build the same tree). Pass the path array the client will actually broadcast under, and the server will match incoming writes against that instead of the node's real location — useful if you're deliberately structuring the server tree differently from what the client sees.
 
 - **`node.disallowClientBroadcast(player)`** — revokes that permission for a player who's still connected. Same note as `removeSync` — not needed for players leaving.
+
+**`GameState.configure({ ... })` — server-only.** The broadcast rate limit and payload size/depth/string-length limits are tunable without editing the package source (editing it directly would get overwritten on the next `wally update`):
+
+```lua
+GameState.configure({
+    MAX_BROADCASTS_PER_PLAYER_PER_FRAME = 40, -- default 20
+    MAX_BROADCAST_PATH_LENGTH = 16,           -- default 16
+    MAX_BROADCAST_DATA_DEPTH = 16,            -- default 16
+    MAX_BROADCAST_DATA_NODES = 500,           -- default 500
+    MAX_BROADCAST_STRING_LENGTH = 2000,       -- default 2000
+    BROADCAST_BUCKET_CAPACITY = 10,           -- default 10, max burst of FireServer calls
+    BROADCAST_BUCKET_REFILL_PER_SECOND = 5,   -- default 5, sustained FireServer calls/sec
+})
+```
+
+Call it once, early on the server (e.g. top of the script that first requires `GameState`). Passing an unknown key logs a warning instead of silently doing nothing, so a typo doesn't quietly no-op. This only exists on the server — there's nothing to configure on the client.
 
 ### In case you want your server code to be server-only
 
@@ -221,13 +245,25 @@ Everything else in the module works unchanged — this only affects the handful 
 
 - **Don't call `broadcastToServer()` in a tight, unthrottled loop.** Nothing stops you locally, and it won't break anything (the server's own limits catch the excess), but it's still wasted client-side memory and network traffic for no benefit — batch your changes and broadcast once.
 
+- **Avoid these keys for *first-time* dynamic data** — they're reserved as method names on every node, and a key that collides with one is ambiguous: `Changed`, `KeyChanged`, `ChildAdded`, `ChildRemoved`, `Update`, `Merge`, `Insert`, `RemoveValue`, `RemoveIndex`, `Keys`, `GetIndex`, `WaitForChanged`, `WaitForKeyChanged`, `WaitForChildAdded`, `WaitForChildRemoved`, `NIL`, and, server/client-side only, `addSync`, `removeSync`, `setSync`, `allowClientBroadcast`, `disallowClientBroadcast`, `broadcastToServer`, `configure`.
+
+  If a node *already has real data* stored under one of these keys, reading it back (`node.Insert`, `node["Insert"]`, etc.) correctly returns that data, not the method — existing data is never shadowed. The ambiguity only bites the *first* write to a brand-new key: `GameState.Players[id].Items.Insert(x)` when `Items` has no child named `Insert` yet calls the `Insert` *method* on `Items` (appending `x` to `Items` itself), not "create a child named `Insert` and write `x` to it." Writing a whole table where one of the keys collides (`GameState.Items({ Insert = "sword" })`) logs a warning when this happens, since both the key and value are known at that point — a bare `node.Insert(x)` call can't be flagged the same way, since it's indistinguishable from an intentional method call. If your data is keyed by something outside your control (an item name a player typed, an arbitrary string ID, etc.), guard against it colliding with the list above before using it as a `GameState` key.
+
 ## Known limitations
 
 - **Reading a table-shaped node walks its entire subtree, every time, with no caching between writes.** A leaf read (`GameState.Round.TimeRemaining()`) is cheap; reading a wide/deep node frequently (e.g. every frame, or in a loop) is not — it rebuilds a fresh snapshot of every descendant on each call. This is fine for the round-scoped/live state GameState is meant for; it's not meant to hold bulk data like large inventories (see "GameState vs. player data / persistence libraries" above). If you need to read a large subtree repeatedly and cheaply, cache the result yourself between writes rather than calling the node on every access.
 
+- **Writing to a node is similarly not free once something is subscribed above it.** Any write that has a `Changed`/`KeyChanged` subscriber anywhere in its ancestor chain — which includes any node under an `addSync`'d node, since `addSync` itself subscribes via `Changed` — rebuilds a full snapshot of each ancestor level to pass into the `old`/`new` callback arguments. For state that's deeply nested *and* changes every frame (e.g. something ticking on `Heartbeat`), prefer keeping the hot value as a shallow, dedicated node (`GameState.Round.TimeRemaining`) rather than burying it several levels deep inside a large synced table — the deeper and larger the surrounding table, the more this costs per write.
+
 - **There's no automated test suite yet.** The replication/validation path (rate limiting, size/depth/string-length checks, `validateData`) is the part most worth testing before relying on this in a live game — if you're evaluating GameState for production use, read that code yourself rather than taking the comments on faith, and contributions of tests are welcome.
 
 - **`allowClientBroadcast` registrations are matched against incoming messages with a linear scan.** Fine for a modest number of registered broadcast targets (the common case — a handful of interactable objects, settings panels, etc.); if your game registers broadcast permissions per-item across a large, dynamic set (e.g. per-item in a big inventory), that scan will show up in a profiler before anything else here does.
+
+## Development
+
+Formatting and linting run in CI via [StyLua](https://github.com/JohnnyMorganz/StyLua) (`stylua.toml`) and [selene](https://github.com/Kampfkarren/selene) (`selene.toml`), both installed through `rokit.toml`. Run `stylua src/` and `selene src/` locally before pushing. Note that as of StyLua 0.20.0, `src/Client/SharedNode.lua` fails `stylua --check` on its own — its use of Luau type functions (`export type function ...`) isn't supported by that parser version yet; this is a StyLua limitation, not a problem with the file.
+
+## License
 
 ## License
 

@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint-and-format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rokit
+        uses: CompeyDev/setup-rokit@v0.1.2
+
+      - name: Check formatting (stylua)
+        # NOTE: as of stylua 0.20.0 this fails on src/Client/SharedNode.lua, unrelated to any
+        # change in this PR - the file uses Luau type functions (`export type function ...`),
+        # which this stylua version's parser doesn't support yet. Confirm whether a newer
+        # stylua release adds support before relying on this job; until then, this check needs
+        # a version bump or a per-file exclusion to be meaningful.
+        run: stylua --check src/
+
+      - name: Lint (selene)
+        run: selene src/
+
+  # No test or typecheck job yet - there's no test suite in this repo (see "Known
+  # limitations" and "Development" in the README) and Luau's `--!strict` mode is enforced
+  # per-file at the editor/LSP level, not via a CLI step here. Add a `test` job (e.g.
+  # running TestEZ under run-in-roblox) once tests exist.

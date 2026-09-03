@@ -1,0 +1,410 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 0000000..e75c440
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,32 @@
++name: CI
++
++on:
++  push:
++    branches: [master]
++  pull_request:
++    branches: [master]
++
++jobs:
++  lint-and-format:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: Install Rokit
++        uses: CompeyDev/setup-rokit@v0.1.2
++
++      - name: Check formatting (stylua)
++        # NOTE: as of stylua 0.20.0 this fails on src/Client/SharedNode.lua, unrelated to any
++        # change in this PR - the file uses Luau type functions (`export type function ...`),
++        # which this stylua version's parser doesn't support yet. Confirm whether a newer
++        # stylua release adds support before relying on this job; until then, this check needs
++        # a version bump or a per-file exclusion to be meaningful.
++        run: stylua --check src/
++
++      - name: Lint (selene)
++        run: selene src/
++
++  # No test or typecheck job yet - there's no test suite in this repo (see "Known
++  # limitations" and "Development" in the README) and Luau's `--!strict` mode is enforced
++  # per-file at the editor/LSP level, not via a CLI step here. Add a `test` job (e.g.
++  # running TestEZ under run-in-roblox) once tests exist.
+diff --git a/README.md b/README.md
+index bc92010..67fa545 100644
+--- a/README.md
++++ b/README.md
+@@ -128,6 +128,14 @@ Every node supports these — see "The mental model" above for the details.
+ - **`node(fn)`** — write based on the current value: `fn` receives the old value and its return becomes the new value.
+ - **`node.Update(fn)`** — identical to `node(fn)`, just reads more clearly at a glance when that's all you're doing.
+ 
++**`GameState.NIL` — writing an explicit hole into an array.** A plain Lua table can't hold a real `nil` in the middle of an array — `{1, nil, 3}` either loses its length or collapses depending on how it's built. If you need a specific array position to be explicitly empty (as opposed to just shorter), write `GameState.NIL` at that position instead of `nil`:
++
++```lua
++GameState.Round.Bracket({ "Alice", GameState.NIL, "Charlie" })
++```
++
++`GameState` converts `NIL` back into a real `nil` internally when the value is stored, so `GameState.Round.Bracket()` reads back `{ "Alice", nil, "Charlie" }` with the hole preserved. You only need this for array holes — writing `nil` directly to a *dict* key or to a node itself works exactly as you'd expect and doesn't need `NIL`.
++
+ ### Subscriptions (available everywhere)
+ 
+ All of these return a **disconnect function** — call it to stop listening:
+@@ -164,6 +172,22 @@ All four only work on nodes that are currently array- or table-shaped (or empty/
+ 
+ - **`node.disallowClientBroadcast(player)`** — revokes that permission for a player who's still connected. Same note as `removeSync` — not needed for players leaving.
+ 
++**`GameState.configure({ ... })` — server-only.** The broadcast rate limit and payload size/depth/string-length limits are tunable without editing the package source (editing it directly would get overwritten on the next `wally update`):
++
++```lua
++GameState.configure({
++    MAX_BROADCASTS_PER_PLAYER_PER_FRAME = 40, -- default 20
++    MAX_BROADCAST_PATH_LENGTH = 16,           -- default 16
++    MAX_BROADCAST_DATA_DEPTH = 16,            -- default 16
++    MAX_BROADCAST_DATA_NODES = 500,           -- default 500
++    MAX_BROADCAST_STRING_LENGTH = 2000,       -- default 2000
++    BROADCAST_BUCKET_CAPACITY = 10,           -- default 10, max burst of FireServer calls
++    BROADCAST_BUCKET_REFILL_PER_SECOND = 5,   -- default 5, sustained FireServer calls/sec
++})
++```
++
++Call it once, early on the server (e.g. top of the script that first requires `GameState`). Passing an unknown key logs a warning instead of silently doing nothing, so a typo doesn't quietly no-op. This only exists on the server — there's nothing to configure on the client.
++
+ ### In case you want your server code to be server-only
+ 
+ By default, everything under `GameState` — including `ServerNode.lua` and every `validateData` function you write — lives in `ReplicatedStorage`, which means it's fully visible to any client, decompilable by exploit tools. For most games that's fine. But your `validateData` functions are exactly what an exploiter would want to read: the precise bounds, whitelists, and conditions your server actually enforces. If you'd rather that logic stay invisible, you can move `Server` into `ServerScriptService`, which clients can't see into at all.
+@@ -221,14 +245,26 @@ Everything else in the module works unchanged — this only affects the handful
+ 
+ - **Don't call `broadcastToServer()` in a tight, unthrottled loop.** Nothing stops you locally, and it won't break anything (the server's own limits catch the excess), but it's still wasted client-side memory and network traffic for no benefit — batch your changes and broadcast once.
+ 
++- **Avoid these keys for *first-time* dynamic data** — they're reserved as method names on every node, and a key that collides with one is ambiguous: `Changed`, `KeyChanged`, `ChildAdded`, `ChildRemoved`, `Update`, `Merge`, `Insert`, `RemoveValue`, `RemoveIndex`, `Keys`, `GetIndex`, `WaitForChanged`, `WaitForKeyChanged`, `WaitForChildAdded`, `WaitForChildRemoved`, `NIL`, and, server/client-side only, `addSync`, `removeSync`, `setSync`, `allowClientBroadcast`, `disallowClientBroadcast`, `broadcastToServer`, `configure`.
++
++  If a node *already has real data* stored under one of these keys, reading it back (`node.Insert`, `node["Insert"]`, etc.) correctly returns that data, not the method — existing data is never shadowed. The ambiguity only bites the *first* write to a brand-new key: `GameState.Players[id].Items.Insert(x)` when `Items` has no child named `Insert` yet calls the `Insert` *method* on `Items` (appending `x` to `Items` itself), not "create a child named `Insert` and write `x` to it." Writing a whole table where one of the keys collides (`GameState.Items({ Insert = "sword" })`) logs a warning when this happens, since both the key and value are known at that point — a bare `node.Insert(x)` call can't be flagged the same way, since it's indistinguishable from an intentional method call. If your data is keyed by something outside your control (an item name a player typed, an arbitrary string ID, etc.), guard against it colliding with the list above before using it as a `GameState` key.
++
+ ## Known limitations
+ 
+ - **Reading a table-shaped node walks its entire subtree, every time, with no caching between writes.** A leaf read (`GameState.Round.TimeRemaining()`) is cheap; reading a wide/deep node frequently (e.g. every frame, or in a loop) is not — it rebuilds a fresh snapshot of every descendant on each call. This is fine for the round-scoped/live state GameState is meant for; it's not meant to hold bulk data like large inventories (see "GameState vs. player data / persistence libraries" above). If you need to read a large subtree repeatedly and cheaply, cache the result yourself between writes rather than calling the node on every access.
+ 
++- **Writing to a node is similarly not free once something is subscribed above it.** Any write that has a `Changed`/`KeyChanged` subscriber anywhere in its ancestor chain — which includes any node under an `addSync`'d node, since `addSync` itself subscribes via `Changed` — rebuilds a full snapshot of each ancestor level to pass into the `old`/`new` callback arguments. For state that's deeply nested *and* changes every frame (e.g. something ticking on `Heartbeat`), prefer keeping the hot value as a shallow, dedicated node (`GameState.Round.TimeRemaining`) rather than burying it several levels deep inside a large synced table — the deeper and larger the surrounding table, the more this costs per write.
++
+ - **There's no automated test suite yet.** The replication/validation path (rate limiting, size/depth/string-length checks, `validateData`) is the part most worth testing before relying on this in a live game — if you're evaluating GameState for production use, read that code yourself rather than taking the comments on faith, and contributions of tests are welcome.
+ 
+ - **`allowClientBroadcast` registrations are matched against incoming messages with a linear scan.** Fine for a modest number of registered broadcast targets (the common case — a handful of interactable objects, settings panels, etc.); if your game registers broadcast permissions per-item across a large, dynamic set (e.g. per-item in a big inventory), that scan will show up in a profiler before anything else here does.
+ 
++## Development
++
++Formatting and linting run in CI via [StyLua](https://github.com/JohnnyMorganz/StyLua) (`stylua.toml`) and [selene](https://github.com/Kampfkarren/selene) (`selene.toml`), both installed through `rokit.toml`. Run `stylua src/` and `selene src/` locally before pushing. Note that as of StyLua 0.20.0, `src/Client/SharedNode.lua` fails `stylua --check` on its own — its use of Luau type functions (`export type function ...`) isn't supported by that parser version yet; this is a StyLua limitation, not a problem with the file.
++
++## License
++
+ ## License
+ 
+ MIT — see [LICENSE](LICENSE).
+diff --git a/rokit.toml b/rokit.toml
+index 654bc45..5bf4422 100644
+--- a/rokit.toml
++++ b/rokit.toml
+@@ -5,3 +5,5 @@
+ 
+ [tools]
+ wally = "UpliftGames/wally@0.3.2"
++stylua = "JohnnyMorganz/StyLua@0.20.0"
++selene = "Kampfkarren/selene@0.27.1"
+diff --git a/selene.toml b/selene.toml
+new file mode 100644
+index 0000000..19393d0
+--- /dev/null
++++ b/selene.toml
+@@ -0,0 +1,4 @@
++std = "roblox"
++
++[lints]
++mixed_table = "allow"
+diff --git a/src/Client/SharedNode.lua b/src/Client/SharedNode.lua
+index 2908e60..0c18ff4 100644
+--- a/src/Client/SharedNode.lua
++++ b/src/Client/SharedNode.lua
+@@ -394,11 +394,6 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
+ 	local isPhantom = (data == nil)
+ 	local newNode = setmetatable({}, {
+ 		__index = function(t: any, i)
+-			-- Check if we are trying to access a function
+-			if typeof(rawget(t, i)) == "function" then
+-				return rawget(t, i)
+-			end
+-
+ 			-- Check if we are trying to access the NodeTypeBase property directly
+ 			if i == "content" then
+ 				return rawget(t, "content")
+@@ -408,6 +403,21 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
+ 				return rawget(t, "Parent")
+ 			end
+ 
++			-- A key that collides with a reserved method name (Insert, Merge, Changed, ...)
++			-- is ambiguous - see the "Reserved keys" note in the README - but if a REAL child
++			-- already exists under this key, that data must win over the method, or previously
++			-- written data becomes permanently unreachable through dot/bracket indexing the
++			-- moment its key happens to match an API method name.
++			local rawContent = rawget(t, "content")
++			if typeof(rawContent) == "table" and rawContent[i] ~= nil then
++				return rawContent[i]
++			end
++
++			-- Check if we are trying to access a function
++			if typeof(rawget(t, i)) == "function" then
++				return rawget(t, i)
++			end
++
+ 			-- We are now trying to access another node. This is only possible if the current node is
+ 			-- a table, or is currently empty (nil), since an empty node is allowed to become a parent
+ 			if t.content ~= nil and typeof(t.content) ~= "table" then
+@@ -567,7 +577,24 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
+ 				elseif typeof(data) ~= "table" then
+ 					t.content = data
+ 				else
+-					for i,v in data do
++					for i, v in data do
++						-- A key here that collides with a reserved node method (Insert, Merge,
++						-- Changed, ...) never actually reaches the "create a child" branch in
++						-- __index above - the method resolves first, so t[i](v, ...) below calls
++						-- that method with v as an argument instead of writing v to a child
++						-- named i. This only catches it when it happens through a whole-table
++						-- write like this one, where i and v are both already known values -
++						-- a bare `node.Insert(x)` call made directly by a developer is exactly
++						-- as valid as this collision looks from here, so it can't be flagged
++						-- without also flagging every correct use of the API; see the "Reserved
++						-- keys" section in the README.
++						local hasExistingChild = typeof(t.content) == "table" and rawget(t.content, i) ~= nil
++						if not hasExistingChild and typeof(rawget(t, i)) == "function" then
++							warn("[GameState] Writing key '"..tostring(i).."' under '"..tostring(t.Key)..
++								"' - this collides with a reserved GameState method name, so '"..
++								tostring(i).."' will be called as that method instead of stored as "..
++								"a child. Rename the key, or see the README's 'Reserved keys' section.")
++						end
+ 						t[i](v, table.clone(firedKeyChangedCbs), table.clone(firedChangedCbs))
+ 					end
+ 					-- Remove removed keys
+diff --git a/src/Server/ServerNode.lua b/src/Server/ServerNode.lua
+index 7e5481b..be371db 100644
+--- a/src/Server/ServerNode.lua
++++ b/src/Server/ServerNode.lua
+@@ -15,7 +15,8 @@ if not SyncRemote then
+ 	SyncRemote.Parent = ClientFolder
+ end
+ SyncRemote = SyncRemote :: RemoteEvent
+-local PendingSync: { [Player]: { any } } = {}
++type PendingSyncNode = { value: { path: {any}, value: any }?, children: { [any]: PendingSyncNode }? }
++local PendingSync: { [Player]: PendingSyncNode } = {}
+ 
+ -- The actual per-player sync/broadcast bookkeeping (which includes closures that
+ -- capture the node itself, e.g. disconnect functions) lives as FIELDS DIRECTLY ON
+@@ -45,40 +46,58 @@ end
+ BroadcastRemote = BroadcastRemote :: RemoteEvent
+ local PendingBroadcasts: { [Player]: { any } } = {}
+ 
+--- Frame-level cap on how many broadcast entries a single player can enqueue per
+--- Heartbeat. 20 comfortably covers legitimate UI-driven writes (a settings panel,
+--- inventory drag-drop, a lever pull) while bounding worst-case per-frame processing
+--- cost. Raise it if your game has denser client-write patterns (e.g. real-time
+--- drawing/building tools).
+-local MAX_BROADCASTS_PER_PLAYER_PER_FRAME = 20
+-local MAX_BROADCAST_PATH_LENGTH = 16
+-local MAX_BROADCAST_DATA_DEPTH = 16
+-local MAX_BROADCAST_DATA_NODES = 500 -- total values walked; bounds cost cheaply, exits early
+-local MAX_BROADCAST_STRING_LENGTH = 2000 -- max length of any single string value in a payload;
+-	-- MAX_BROADCAST_DATA_NODES counts table entries, not bytes, so without this a single
+-	-- oversized string leaf would pass the node-count check untouched
+-
+--- Token bucket limiting raw BroadcastRemote:FireServer call *frequency*, independent
+--- of payload size/shape - MAX_BROADCASTS_PER_PLAYER_PER_FRAME/size checks above don't
+--- stop a client from calling FireServer itself extremely rapidly with small/empty
+--- payloads, and each call has real server-side dispatch cost regardless of content.
+--- Defaults allow short legitimate bursts (a flurry of clicks) while capping sustained
+--- spam at 5 calls/sec - tune BROADCAST_BUCKET_CAPACITY (max burst) and
+--- BROADCAST_BUCKET_REFILL_PER_SECOND (sustained rate) to your game's actual needs.
+-local BROADCAST_BUCKET_CAPACITY = 10
+-local BROADCAST_BUCKET_REFILL_PER_SECOND = 5
++-- These are tunable via GameState.configure({...}) below rather than editing the locals
++-- directly - this module lives inside Packages/ once installed via Wally, and editing the
++-- values in place here gets silently overwritten on the next `wally update`.
++local Config = {
++	-- Frame-level cap on how many broadcast entries a single player can enqueue per
++	-- Heartbeat. 20 comfortably covers legitimate UI-driven writes (a settings panel,
++	-- inventory drag-drop, a lever pull) while bounding worst-case per-frame processing
++	-- cost. Raise it if your game has denser client-write patterns (e.g. real-time
++	-- drawing/building tools).
++	MAX_BROADCASTS_PER_PLAYER_PER_FRAME = 20,
++	MAX_BROADCAST_PATH_LENGTH = 16,
++	MAX_BROADCAST_DATA_DEPTH = 16,
++	MAX_BROADCAST_DATA_NODES = 500, -- total values walked; bounds cost cheaply, exits early
++	-- Max length of any single string value in a payload; MAX_BROADCAST_DATA_NODES counts
++	-- table entries, not bytes, so without this a single oversized string leaf would pass
++	-- the node-count check untouched.
++	MAX_BROADCAST_STRING_LENGTH = 2000,
++	-- Token bucket limiting raw BroadcastRemote:FireServer call *frequency*, independent of
++	-- payload size/shape - the limits above don't stop a client from calling FireServer
++	-- itself extremely rapidly with small/empty payloads, and each call has real
++	-- server-side dispatch cost regardless of content. Defaults allow short legitimate
++	-- bursts (a flurry of clicks) while capping sustained spam at 5 calls/sec.
++	BROADCAST_BUCKET_CAPACITY = 10,
++	BROADCAST_BUCKET_REFILL_PER_SECOND = 5,
++}
++
++-- Lets a game override any of the limits above without touching library source, e.g.
++--   GameState.configure({ MAX_BROADCASTS_PER_PLAYER_PER_FRAME = 40 })
++-- Server-only - there's nothing to configure on the client. Unknown keys are ignored with a
++-- warning rather than silently accepted, to catch typos.
++local function configure(overrides: { [string]: number })
++	for key, value in overrides do
++		if Config[key] == nil then
++			warn("[GameState] configure(): unknown option '"..tostring(key).."', ignoring")
++		else
++			Config[key] = value
++		end
++	end
++end
++
+ local BroadcastBuckets: { [Player]: { tokens: number, lastRefill: number } } = setmetatable({}, {__mode = "k"}) :: any
+ 
+ local function consumeBroadcastToken(player: Player): boolean
+ 	local bucket = BroadcastBuckets[player]
+ 	local now = os.clock()
+ 	if not bucket then
+-		bucket = { tokens = BROADCAST_BUCKET_CAPACITY, lastRefill = now }
++		bucket = { tokens = Config.BROADCAST_BUCKET_CAPACITY, lastRefill = now }
+ 		BroadcastBuckets[player] = bucket
+ 	end
+ 	local elapsed = now - bucket.lastRefill
+ 	if elapsed > 0 then
+-		bucket.tokens = math.min(BROADCAST_BUCKET_CAPACITY, bucket.tokens + elapsed * BROADCAST_BUCKET_REFILL_PER_SECOND)
++		bucket.tokens = math.min(Config.BROADCAST_BUCKET_CAPACITY, bucket.tokens + elapsed * Config.BROADCAST_BUCKET_REFILL_PER_SECOND)
+ 		bucket.lastRefill = now
+ 	end
+ 	if bucket.tokens >= 1 then
+@@ -91,6 +110,7 @@ end
+ local SharedNode = require(script.Parent.Parent.Client.SharedNode)
+ local ServerNode = {}
+ ServerNode.NIL = SharedNode.NIL
++ServerNode.configure = configure
+ 
+ type ServerExtra = {
+ 	addSync: (Player) -> (),
+@@ -106,14 +126,46 @@ export type ServerNode<T> = SharedNode.NodeType<T, ServerExtra>
+ -- so callers building a Changed-callback closure around this don't need to
+ -- capture `node` - a node's path is fixed for its lifetime (Key/Parent never
+ -- change), so it's safe to compute once and reuse.
++--
++-- Dedup uses real path segments as actual table keys (nested one level per segment),
++-- not a stringified path. Path segments can be any Luau value - numbers, strings,
++-- booleans, or an Instance/table used as a dict key - and Lua's native key equality
++-- already handles all of those correctly. Stringifying first would reintroduce exactly
++-- the collisions this is meant to avoid: tostring(1) and tostring("1") are both "1", and
++-- tostring() on an Instance returns its .Name, which two different Instances can share.
++--
++-- A tree position can be a leaf (something was written to exactly this path), have
++-- children (something was written further down), or both at once in the same frame -
++-- so `value` and `children` are kept as separate fields on each node instead of one
++-- overwriting the other.
+ local function queueSync(path: {any}, player: Player, value: any)
+ 	if not PendingSync[player] then
+ 		PendingSync[player] = {}
+ 	end
+-	table.insert(PendingSync[player], {
+-		path = path,
+-		value = value,
+-	})
++	local cursor = PendingSync[player]
++	for _, key in path do
++		if typeof(cursor.children) ~= "table" then
++			cursor.children = {}
++		end
++		if typeof(cursor.children[key]) ~= "table" then
++			cursor.children[key] = {}
++		end
++		cursor = cursor.children[key]
++	end
++	-- A later write to this exact path replaces the earlier one - only the most recent
++	-- value per path needs to reach the client within a single flush.
++	cursor.value = { path = path, value = value }
++end
++
++local function collectPendingSync(node: PendingSyncNode, out: { any })
++	if node.value ~= nil then
++		table.insert(out, node.value)
++	end
++	if node.children then
++		for _, child in node.children do
++			collectPendingSync(child, out)
++		end
++	end
+ end
+ 
+ local function pathStartsWith(path: {any}, prefix: {any}): boolean
+@@ -339,11 +391,13 @@ task.spawn(function()
+ 
+ 		-- Syncing
+ 
+-		for player, queue in PendingSync do
+-			if #queue > 0 then
+-				SyncRemote:FireClient(player, queue)
+-				PendingSync[player] = {}
++		for player, tree in PendingSync do
++			local batch = {}
++			collectPendingSync(tree, batch)
++			if #batch > 0 then
++				SyncRemote:FireClient(player, batch)
+ 			end
++			PendingSync[player] = {}
+ 		end
+ 
+ 		-- Broadcasting
+@@ -426,7 +480,7 @@ BroadcastRemote.OnServerEvent:Connect(function(player: Player, queue: { any })
+ 	end
+ 	local existing = #PendingBroadcasts[player]
+ 	for i, entry in queue do
+-		if existing + i > MAX_BROADCASTS_PER_PLAYER_PER_FRAME then
++		if existing + i > Config.MAX_BROADCASTS_PER_PLAYER_PER_FRAME then
+ 			warn("[GameState] "..player.Name.." exceeded broadcast rate limit, dropping excess")
+ 			break
+ 		end
+@@ -434,11 +488,11 @@ BroadcastRemote.OnServerEvent:Connect(function(player: Player, queue: { any })
+ 			warn("[GameState] "..player.Name.." sent a malformed broadcast entry, discarding")
+ 			continue
+ 		end
+-		if #entry.path > MAX_BROADCAST_PATH_LENGTH then
++		if #entry.path > Config.MAX_BROADCAST_PATH_LENGTH then
+ 			warn("[GameState] "..player.Name.." sent an oversized broadcast path, discarding")
+ 			continue
+ 		end
+-		if not isWithinDataLimits(entry.data, MAX_BROADCAST_DATA_DEPTH, MAX_BROADCAST_DATA_NODES, MAX_BROADCAST_STRING_LENGTH) then
++		if not isWithinDataLimits(entry.data, Config.MAX_BROADCAST_DATA_DEPTH, Config.MAX_BROADCAST_DATA_NODES, Config.MAX_BROADCAST_STRING_LENGTH) then
+ 			warn("[GameState] "..player.Name.." sent an oversized broadcast payload, discarding")
+ 			continue
+ 		end
+diff --git a/src/Server/init.lua b/src/Server/init.lua
+index fcb9b69..517d066 100644
+--- a/src/Server/init.lua
++++ b/src/Server/init.lua
+@@ -3,4 +3,5 @@ local Node = require(script.ServerNode)
+ local Template = require(script.Template)
+ local GameState = Node.new("GameState", Template) :: Node.ServerNode<Template.Template>
+ GameState.NIL = Node.NIL
++GameState.configure = Node.configure
+ return GameState
+diff --git a/stylua.toml b/stylua.toml
+new file mode 100644
+index 0000000..b1aeb38
+--- /dev/null
++++ b/stylua.toml
+@@ -0,0 +1,6 @@
++column_width = 120
++line_endings = "Unix"
++indent_type = "Tabs"
++indent_width = 4
++quote_style = "AutoPreferDouble"
++call_parentheses = "Always"
