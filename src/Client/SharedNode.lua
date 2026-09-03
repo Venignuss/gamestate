@@ -590,10 +590,11 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 						-- keys" section in the README.
 						local hasExistingChild = typeof(t.content) == "table" and rawget(t.content, i) ~= nil
 						if not hasExistingChild and typeof(rawget(t, i)) == "function" then
-							warn("[GameState] Writing key '"..tostring(i).."' under '"..tostring(t.Key)..
+							error("[GameState] Writing key '"..tostring(i).."' under '"..tostring(t.Key)..
 								"' - this collides with a reserved GameState method name, so '"..
-								tostring(i).."' will be called as that method instead of stored as "..
-								"a child. Rename the key, or see the README's 'Reserved keys' section.")
+								tostring(i).."' would be called as that method instead of stored as "..
+								"a child, silently discarding the value instead of saving it. Rename "..
+								"the key, or see the README's 'Reserved keys' section.")
 						end
 						t[i](v, table.clone(firedKeyChangedCbs), table.clone(firedChangedCbs))
 					end

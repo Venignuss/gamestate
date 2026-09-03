@@ -247,7 +247,7 @@ Everything else in the module works unchanged — this only affects the handful 
 
 - **Avoid these keys for *first-time* dynamic data** — they're reserved as method names on every node, and a key that collides with one is ambiguous: `Changed`, `KeyChanged`, `ChildAdded`, `ChildRemoved`, `Update`, `Merge`, `Insert`, `RemoveValue`, `RemoveIndex`, `Keys`, `GetIndex`, `WaitForChanged`, `WaitForKeyChanged`, `WaitForChildAdded`, `WaitForChildRemoved`, `NIL`, and, server/client-side only, `addSync`, `removeSync`, `setSync`, `allowClientBroadcast`, `disallowClientBroadcast`, `broadcastToServer`, `configure`.
 
-  If a node *already has real data* stored under one of these keys, reading it back (`node.Insert`, `node["Insert"]`, etc.) correctly returns that data, not the method — existing data is never shadowed. The ambiguity only bites the *first* write to a brand-new key: `GameState.Players[id].Items.Insert(x)` when `Items` has no child named `Insert` yet calls the `Insert` *method* on `Items` (appending `x` to `Items` itself), not "create a child named `Insert` and write `x` to it." Writing a whole table where one of the keys collides (`GameState.Items({ Insert = "sword" })`) logs a warning when this happens, since both the key and value are known at that point — a bare `node.Insert(x)` call can't be flagged the same way, since it's indistinguishable from an intentional method call. If your data is keyed by something outside your control (an item name a player typed, an arbitrary string ID, etc.), guard against it colliding with the list above before using it as a `GameState` key.
+  If a node *already has real data* stored under one of these keys, reading it back (`node.Insert`, `node["Insert"]`, etc.) correctly returns that data, not the method — existing data is never shadowed. The ambiguity only bites the *first* write to a brand-new key: `GameState.Players[id].Items.Insert(x)` when `Items` has no child named `Insert` yet calls the `Insert` *method* on `Items` (appending `x` to `Items` itself), not "create a child named `Insert` and write `x` to it." Writing a whole table where one of the keys collides (`GameState.Items({ Insert = "sword" })`) throws an error when this happens, since both the key and value are known at that point and continuing would silently discard the value instead of saving it — a bare `node.Insert(x)` call can't be flagged the same way, since it's indistinguishable from an intentional method call. If your data is keyed by something outside your control (an item name a player typed, an arbitrary string ID, etc.), guard against it colliding with the list above before using it as a `GameState` key.
 
 ## Known limitations
 
@@ -257,13 +257,15 @@ Everything else in the module works unchanged — this only affects the handful 
 
 - **There's no automated test suite yet.** The replication/validation path (rate limiting, size/depth/string-length checks, `validateData`) is the part most worth testing before relying on this in a live game — if you're evaluating GameState for production use, read that code yourself rather than taking the comments on faith, and contributions of tests are welcome.
 
-- **`allowClientBroadcast` registrations are matched against incoming messages with a linear scan.** Fine for a modest number of registered broadcast targets (the common case — a handful of interactable objects, settings panels, etc.); if your game registers broadcast permissions per-item across a large, dynamic set (e.g. per-item in a big inventory), that scan will show up in a profiler before anything else here does.
+- **`allowClientBroadcast` registrations are matched against incoming messages via a per-player trie keyed by path segments** — an O(message path length) walk rather than a scan of every registered node, so this stays cheap even with a large, dynamic set of broadcast-writable nodes (e.g. per-item in a big inventory).
 
 ## Development
 
 Formatting and linting run in CI via [StyLua](https://github.com/JohnnyMorganz/StyLua) (`stylua.toml`) and [selene](https://github.com/Kampfkarren/selene) (`selene.toml`), both installed through `rokit.toml`. Run `stylua src/` and `selene src/` locally before pushing. Note that as of StyLua 0.20.0, `src/Client/SharedNode.lua` fails `stylua --check` on its own — its use of Luau type functions (`export type function ...`) isn't supported by that parser version yet; this is a StyLua limitation, not a problem with the file.
 
-## License
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

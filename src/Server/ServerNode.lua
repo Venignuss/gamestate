@@ -168,16 +168,67 @@ local function collectPendingSync(node: PendingSyncNode, out: { any })
 	end
 end
 
-local function pathStartsWith(path: {any}, prefix: {any}): boolean
-	if #path < #prefix then
-		return false
+-- Per-player index of broadcast registrations, keyed by the path segments the client
+-- addresses them under (reg.clientPath or reg.path) - same "real path segments as real
+-- table keys" trie shape as PendingSync above. This turns matching an incoming broadcast
+-- from an O(total registered nodes across the whole game) scan into an O(message path
+-- length) walk: registrations only ever need to be found along the exact chain of keys
+-- the client sent, nothing else is a candidate.
+type BroadcastTrieNode = { registration: any?, children: { [any]: BroadcastTrieNode }? }
+local BroadcastTrieRoot: { [Player]: BroadcastTrieNode } = setmetatable({}, {__mode = "k"}) :: any
+
+local function trieInsert(player: Player, path: {any}, registration: any)
+	local root = BroadcastTrieRoot[player]
+	if not root then
+		root = {}
+		BroadcastTrieRoot[player] = root
 	end
-	for i, key in prefix do
-		if path[i] ~= key then
-			return false
+	local cursor = root
+	for _, key in path do
+		if not cursor.children then
+			cursor.children = {}
+		end
+		if not cursor.children[key] then
+			cursor.children[key] = {}
+		end
+		cursor = cursor.children[key]
+	end
+	cursor.registration = registration
+end
+
+local function trieRemove(player: Player, path: {any})
+	local cursor = BroadcastTrieRoot[player]
+	if not cursor then
+		return
+	end
+	for _, key in path do
+		if not cursor.children or not cursor.children[key] then
+			return
+		end
+		cursor = cursor.children[key]
+	end
+	cursor.registration = nil
+end
+
+-- Walks the player's trie along the message's path, remembering the DEEPEST registration
+-- seen along the way - a registration further down the path always wins over one closer
+-- to the root, matching the old scan's "longest matching prefix" behavior.
+local function trieFindBestMatch(player: Player, path: {any}): any?
+	local cursor = BroadcastTrieRoot[player]
+	if not cursor then
+		return nil
+	end
+	local best = cursor.registration
+	for _, key in path do
+		if not cursor.children or not cursor.children[key] then
+			break
+		end
+		cursor = cursor.children[key]
+		if cursor.registration then
+			best = cursor.registration
 		end
 	end
-	return true
+	return best
 end
 
 local function isWithinDataLimits(data: any, maxDepth: number, maxNodes: number, maxStringLength: number): boolean
@@ -353,15 +404,20 @@ local function decorateServer(node: any)
 				"player as-is. Pass a validateData function unless you intend to fully trust this player's writes.")
 		end
 
+		local path = SharedNode.getNodePath(node)
+		local registration = {
+			node = node,
+			validateData = validateData,
+			clientPath = clientPath,
+			path = clientPath or path,
+		}
+
 		if not rawget(node, "_broadcastRegistry") then
 			rawset(node, "_broadcastRegistry", {})
 		end
-		rawget(node, "_broadcastRegistry")[player] = {
-			validateData = validateData,
-			clientPath = clientPath,
-			path = SharedNode.getNodePath(node),
-		}
+		rawget(node, "_broadcastRegistry")[player] = registration
 		BroadcastableNodes[node] = true
+		trieInsert(player, clientPath or path, registration)
 	end
 
 	-- Revokes a player's permission to broadcast-write to this node. Same as removeSync - you
@@ -371,9 +427,13 @@ local function decorateServer(node: any)
 		assertIsPlayer(player)
 		local registry = rawget(node, "_broadcastRegistry")
 		if registry then
+			local registration = registry[player]
 			registry[player] = nil
 			if next(registry) == nil then
 				BroadcastableNodes[node] = nil
+			end
+			if registration then
+				trieRemove(player, registration.path)
 			end
 		end
 	end
@@ -410,35 +470,7 @@ task.spawn(function()
 						return
 					end
 
-					local bestMatch: {
-						node: any,
-						validateData: ((any) -> boolean)?,
-						path: {any},
-					}? = nil
-					local bestMatchLength = -1
-
-					-- Note: this is an O(registered nodes) scan per message. Fine as long as
-					-- allowClientBroadcast registrations stay modest in number; revisit with an
-					-- indexed structure (e.g. trie by path) if this ever needs to scale up.
-					for node in BroadcastableNodes do
-						local playerRegs = rawget(node, "_broadcastRegistry")
-						local reg = playerRegs and playerRegs[player]
-						if reg then
-							local expectedPath = reg.clientPath or reg.path
-							if pathStartsWith(message.path, expectedPath) then
-								if #expectedPath == bestMatchLength then
-									warn("[GameState] Broadcast path collision for "..player.Name..", ignoring duplicate match")
-								elseif #expectedPath > bestMatchLength then
-									bestMatch = {
-										node = node,
-										validateData = reg.validateData,
-										path = expectedPath
-									}
-									bestMatchLength = #expectedPath
-								end
-							end
-						end
-					end
+					local bestMatch = trieFindBestMatch(player, message.path)
 
 					if bestMatch then
 						local ok, approved, reconstructed = pcall(function()
@@ -523,6 +555,7 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	PendingSync[player] = nil
 	PendingBroadcasts[player] = nil
 	BroadcastBuckets[player] = nil
+	BroadcastTrieRoot[player] = nil
 end)
 
 return ServerNode
