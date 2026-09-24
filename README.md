@@ -32,7 +32,7 @@ Add it to your `wally.toml`:
 
 ```toml
 [dependencies]
-GameState = "venignuss/gamestate@0.1.0"
+GameState = "venignuss/gamestate@1.0.0"
 ```
 
 Then:
@@ -226,6 +226,17 @@ Everything else in the module works unchanged — this only affects the handful 
   ```
 
   This only does anything if the server called `allowClientBroadcast` for this exact path and player, and only takes effect if `validateData` accepts it — otherwise the server just quietly discards it. It also doesn't apply instantly: it's queued and sent roughly once per frame, not the moment you call it.
+
+## Reserved keys
+
+Every node exposes its API — `Insert`, `Merge`, `Changed`, `addSync`, and so on — as bare fields alongside whatever data you store on it. If you write a key that happens to match one of those method names (e.g. `GameState.Players[userId].Insert(someValue)` when you meant to store data *under* a child called `Insert`), the method wins: your value is passed to the existing method as an argument rather than being saved as a new child. This can't be detected automatically, since a bare `node.Insert(x)` call is exactly as valid as this collision looks from the outside — so avoid naming your own keys after node methods (see the "Function reference" section above for the full list).
+
+Separately: **you always write to a node by calling it — `node(value)` or `node.Key(value)` — never by assigning to it directly.** `GameState.Players[userId].Coins = 100` is not supported and throws a clear error rather than silently corrupting the node (in earlier versions this failed silently, permanently breaking that field with no warning). If you see this error, you almost always meant to call the node instead:
+
+```lua
+GameState.Players[userId].Coins(100)        -- correct: writes 100
+GameState.Players[userId].Coins = 100       -- wrong: throws an error now
+```
 
 ## Things to be careful of
 

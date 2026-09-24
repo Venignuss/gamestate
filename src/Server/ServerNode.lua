@@ -15,8 +15,19 @@ if not SyncRemote then
 	SyncRemote.Parent = ClientFolder
 end
 SyncRemote = SyncRemote :: RemoteEvent
-type PendingSyncNode = { value: { path: {any}, value: any }?, children: { [any]: PendingSyncNode }? }
+type PendingSyncNode = { value: { path: {any}, value: any, seq: number }?, children: { [any]: PendingSyncNode }? }
 local PendingSync: { [Player]: PendingSyncNode } = {}
+-- Monotonic counter stamped onto every queued sync write, across every path and every
+-- player. The trie below is keyed by PATH POSITION, not write order - a node's own queued
+-- value sits at a different trie position than its children's queued values, and walking
+-- the trie top-down (parent value, then child values) does NOT guarantee that reflects the
+-- order those writes actually happened in during the frame. If a descendant is written
+-- first and then an ancestor overwrites it later in the same frame, the true final state
+-- has no trace of that descendant write - but a naive top-down trie walk would still emit
+-- the ancestor's value first and the (now-stale) descendant's value second, resurrecting
+-- data on the client that the server no longer has. Stamping and later sorting by `seq`
+-- restores the real write order regardless of where each write landed in the trie.
+local SyncSequenceCounter = 0
 
 -- The actual per-player sync/broadcast bookkeeping (which includes closures that
 -- capture the node itself, e.g. disconnect functions) lives as FIELDS DIRECTLY ON
@@ -113,10 +124,10 @@ ServerNode.NIL = SharedNode.NIL
 ServerNode.configure = configure
 
 type ServerExtra = {
-	addSync: (Player) -> (),
+	addSync: (Player | {Player}) -> (),
 	setSync: ({Player}) -> (),
-	removeSync: (Player) -> (),
-	allowClientBroadcast: (Player, ((any) -> boolean)?, ((Player) -> {any})?) -> (),
+	removeSync: (Player | {Player}) -> (),
+	allowClientBroadcast: (Player, ((any) -> boolean)?, {any}?) -> (),
 	disallowClientBroadcast: (Player) -> (),
 }
 
@@ -153,8 +164,11 @@ local function queueSync(path: {any}, player: Player, value: any)
 		cursor = cursor.children[key]
 	end
 	-- A later write to this exact path replaces the earlier one - only the most recent
-	-- value per path needs to reach the client within a single flush.
-	cursor.value = { path = path, value = value }
+	-- value per path needs to reach the client within a single flush. It still gets a
+	-- fresh `seq` each time it's overwritten, so the replacement is correctly ordered
+	-- against every other path's writes too.
+	SyncSequenceCounter += 1
+	cursor.value = { path = path, value = value, seq = SyncSequenceCounter }
 end
 
 local function collectPendingSync(node: PendingSyncNode, out: { any })
@@ -303,7 +317,7 @@ local function decorateServer(node: any)
 	-- No need to clean this up when the player leaves - that happens automatically (see
 	-- PlayerRemoving below). You only need removeSync if you want to stop syncing to a player
 	-- who's still connected (e.g. they're no longer allowed to see this data).
-	node.addSync = function(players: Player | {Player})
+	rawset(node, "addSync", function(players: Player | {Player})
 		if typeof(players) ~= "table" then
 			players = {players}
 		end
@@ -324,12 +338,12 @@ local function decorateServer(node: any)
 			connections[player] = disconnect
 			SyncedNodes[node] = true
 		end
-	end
+	end)
 
 	-- Stops replicating this node to the given player(s) while they're still connected. If
 	-- they're leaving the game, you don't need to call this yourself - PlayerRemoving handles
 	-- it automatically.
-	node.removeSync = function(players: Player | {Player})
+	rawset(node, "removeSync", function(players: Player | {Player})
 		if typeof(players) ~= "table" then
 			players = {players}
 		end
@@ -344,13 +358,13 @@ local function decorateServer(node: any)
 		if connections and next(connections) == nil then
 			SyncedNodes[node] = nil
 		end
-	end
+	end)
 
 	-- Sets the exact list of who this node syncs to, in one call - adds anyone missing and
 	-- removes anyone not in the list. Handy when "who should see this" changes as a whole
 	-- (e.g. a team/party roster), instead of manually diffing addSync/removeSync calls yourself.
 	--   GameState.Parties[partyId].SharedState.setSync(currentPartyMembers)
-	node.setSync = function(players: {Player})
+	rawset(node, "setSync", function(players: {Player})
 		local wanted = {}
 		for _, p in players do
 			wanted[p] = true
@@ -364,7 +378,7 @@ local function decorateServer(node: any)
 		for p in wanted do
 			node.addSync(p)
 		end
-	end
+	end)
 
 	-- Lets a specific client write to this node from their end, via broadcastToServer() on the
 	-- client. This is the ONLY way client-written data can reach server-trusted state - a client
@@ -380,7 +394,7 @@ local function decorateServer(node: any)
 	-- reminder). `clientPath` is optional and only needed if you want the client to address this
 	-- node by a different path than its real one server-side.
 	-- No need to clean this up when the player leaves - handled automatically.
-	node.allowClientBroadcast = function(
+	rawset(node, "allowClientBroadcast", function(
 		player: Player,
 		validateData: ((any) -> boolean)?,
 		clientPath: {any}?
@@ -418,12 +432,12 @@ local function decorateServer(node: any)
 		rawget(node, "_broadcastRegistry")[player] = registration
 		BroadcastableNodes[node] = true
 		trieInsert(player, clientPath or path, registration)
-	end
+	end)
 
 	-- Revokes a player's permission to broadcast-write to this node. Same as removeSync - you
 	-- only need this for revoking access from someone still connected; leaving players are
 	-- cleaned up automatically.
-	node.disallowClientBroadcast = function(player: Player)
+	rawset(node, "disallowClientBroadcast", function(player: Player)
 		assertIsPlayer(player)
 		local registry = rawget(node, "_broadcastRegistry")
 		if registry then
@@ -436,7 +450,7 @@ local function decorateServer(node: any)
 				trieRemove(player, registration.path)
 			end
 		end
-	end
+	end)
 end
 
 -- Creates the root GameState node on the server. You won't normally call this yourself -
@@ -455,6 +469,12 @@ task.spawn(function()
 			local batch = {}
 			collectPendingSync(tree, batch)
 			if #batch > 0 then
+				-- collectPendingSync walks the trie by PATH POSITION (parent before
+				-- children), not by when each write actually happened - sort by `seq`
+				-- to restore chronological order before the client replays these.
+				table.sort(batch, function(a, b)
+					return a.seq < b.seq
+				end)
 				SyncRemote:FireClient(player, batch)
 			end
 			PendingSync[player] = {}

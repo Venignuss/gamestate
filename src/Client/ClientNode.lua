@@ -25,12 +25,12 @@ local function decorateClient(node: any)
 	-- later), and even then, whether it actually applies depends entirely on the server accepting
 	-- it. Write locally first (as above) so your own client's copy updates immediately, then
 	-- call this to ask the server to accept the same change.
-	node.broadcastToServer = function()
+	rawset(node, "broadcastToServer", function()
 		table.insert(PendingBroadcasts, {
 			path = SharedNode.getNodePath(node),
 			data = node(),
 		})
-	end
+	end)
 end
 -- Creates the root GameState node on the client. You won't normally call this yourself -
 -- Client.lua does it once, automatically, when the module is first required.

@@ -347,10 +347,10 @@ local function detachNode(node: any)
 	local parentContent = parent.content
 	if parentContent and parentContent[node.Key] == node then
 		parentContent[node.Key] = nil
-		parent.content = parentContent
+		rawset(parent, "content", parentContent)
 	end
-	node.content = nil
-	node._isDetached = true
+	rawset(node, "content", nil)
+	rawset(node, "_isDetached", true)
 	rememberDetached(parent, node.Key, node)
 	-- Cascade upward: the parent may now be empty too
 	if shouldDetach(parent) then
@@ -366,17 +366,17 @@ local function reattachNode(node: any)
 	if parent then
 		reattachNode(parent) -- make sure the whole chain above is attached first
 		if not parent.content then
-			parent.content = {}
+			rawset(parent, "content", {})
 		end
 		parent.content[node.Key] = node
 	end
-	node._isDetached = nil
+	rawset(node, "_isDetached", nil)
 end
 
 local function clearPhantomChain(node: any)
 	local n = node
 	while n and rawget(n, "_isPhantom") do
-		n._isPhantom = nil
+		rawset(n, "_isPhantom", nil)
 		n = rawget(n, "Parent")
 	end
 end
@@ -421,13 +421,13 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 			-- We are now trying to access another node. This is only possible if the current node is
 			-- a table, or is currently empty (nil), since an empty node is allowed to become a parent
 			if t.content ~= nil and typeof(t.content) ~= "table" then
-				t.content = {}
+				rawset(t, "content", {})
 				--error("[GameState] Trying to index a "..typeof(content).." ("..tostring(content)..") with "..tostring(i))
 				--return nil
 			end
 			-- If this node has no content yet, promote it into a parent table so it can hold children
 			if t.content == nil then
-				t.content = {}
+				rawset(t, "content", {})
 			end
 			-- If the index exists in the table, return the node it corresponds to
 			if t.content[i] ~= nil then
@@ -442,7 +442,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 			-- If we reach this points it means we are trying to access a node that doesn't exist.
 			-- We need to create the node and initialize it with nil
 			local child = Node.new(i, nil, decorate)
-			child.Parent = t
+			rawset(child, "Parent", t)
 			t.content[i] = child
 			task.defer(function()
 				if shouldDetach(child) then
@@ -450,6 +450,20 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 				end
 			end)
 			return child
+		end,
+		-- Every node's data and methods are exposed as bare fields (content, Key, Insert,
+		-- Merge, Changed, addSync, ...) so they can be read through __index above - but that
+		-- means a plain `node.Insert = 5` (a typo for `node.Insert(5)`, or a key that
+		-- happens to collide with a method name) would otherwise silently overwrite that
+		-- field with no error, permanently breaking it for this node with nothing in the
+		-- output to explain why. All of GameState's OWN internal writes to a node's fields
+		-- go through rawset (which bypasses this), so this only ever fires for writes
+		-- coming from outside the module - exactly the case it's meant to catch.
+		__newindex = function(_t: any, i: any, _v: any)
+			error("[GameState] Can't assign directly to '"..tostring(i).."' on a GameState node. "..
+				"Use node(value) to write data, node."..tostring(i)..
+				"(...) to call a method, or node.Key(value) to write to a child - not "..
+				"node.Key = value.")
 		end,
 		-- Every node in the tree is called like a function to read or write it:
 		--   GameState.Players[userId].Coins()        -- read: returns the current value (nil if never set)
@@ -572,10 +586,10 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 				if data == nil then
 					-- Explicitly clear this node back to empty
-					t.content = nil
+					rawset(t, "content", nil)
 					detachNode(t)
 				elseif typeof(data) ~= "table" then
-					t.content = data
+					rawset(t, "content", data)
 				else
 					for i, v in data do
 						-- A key here that collides with a reserved node method (Insert, Merge,
@@ -635,22 +649,25 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	else
 		for i, v in pairs(data) do
 			content[i] = Node.new(i, v, decorate)
-			content[i].Parent = newNode
+			rawset(content[i], "Parent", newNode)
 		end
 	end
 
-	newNode.content = content
-	newNode.Key = key
-	newNode._isPhantom = isPhantom
+	rawset(newNode, "content", content)
+	rawset(newNode, "Key", key)
+	rawset(newNode, "_isPhantom", isPhantom)
 
 	-- Shorthand for the "update based on current value" write style:
 	--   GameState.Players[userId].Coins.Update(function(old) return old + 1 end)
 	-- is exactly the same as:
 	--   GameState.Players[userId].Coins(function(old) return old + 1 end)
 	-- Use whichever reads better to you - they're identical.
-	newNode.Update = function(fn)
+	-- (All the method assignments below use rawset rather than plain `.` - the metatable's
+	-- __newindex rejects external field writes, and rawset is how GameState's own setup
+	-- bypasses that for itself.)
+	rawset(newNode, "Update", function(fn)
 		return newNode(fn)
-	end
+	end)
 
 	-- Fires whenever any DIRECT CHILD of this node changes - added, removed, or its value
 	-- changed. You get the child's key, its old value, and its new value.
@@ -663,7 +680,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	-- Returns a disconnect function - call it to stop listening:
 	--   local disconnect = someNode.KeyChanged(function(...) ... end)
 	--   disconnect()
-	newNode.KeyChanged = function(callback: (any, T, T) -> ())
+	rawset(newNode, "KeyChanged", function(callback: (any, T, T) -> ())
 		-- Safeguards
 
 		local data = newNode()
@@ -703,7 +720,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 		end
 
 		return disconnect
-	end
+	end)
 
 	-- Fires only when a NEW direct child appears under this node (goes from not existing to
 	-- having a value) - a filtered version of KeyChanged that ignores everything except "brand
@@ -712,7 +729,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	--       print(userId, "joined with", playerData)
 	--   end)
 	-- Returns a disconnect function, same as KeyChanged.
-	newNode.ChildAdded = function(callback: (any, T) -> ())
+	rawset(newNode, "ChildAdded", function(callback: (any, T) -> ())
 		-- Safeguards
 
 		local data = newNode()
@@ -739,7 +756,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 		end
 
 		return disconnect
-	end
+	end)
 
 	-- The mirror of ChildAdded: fires only when a direct child goes from having a value to
 	-- being cleared (existed, then got set to nil).
@@ -747,7 +764,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	--       print(userId, "left, last data was", lastKnownData)
 	--   end)
 	-- Returns a disconnect function, same as KeyChanged.
-	newNode.ChildRemoved = function(callback: (any, T) -> ())
+	rawset(newNode, "ChildRemoved", function(callback: (any, T) -> ())
 		-- Safeguards
 
 		local data = newNode()
@@ -774,7 +791,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 		end
 
 		return disconnect
-	end
+	end)
 
 	-- Fires whenever THIS node's own value changes - not its children individually, but the
 	-- node as a whole (so writing any nested value under it will also fire this, with `old`/`new`
@@ -786,7 +803,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	-- when you specifically want to know WHICH direct child changed. Returns a disconnect
 	-- function, same as KeyChanged. Remember the timing note above the read/write section:
 	-- inside this callback, use the `old`/`new` arguments - don't re-read the node itself.
-	newNode.Changed = function(callback : (T, T) -> ())
+	rawset(newNode, "Changed", function(callback : (T, T) -> ())
 		-- Same reasoning as KeyChanged above: a live subscriber means this node
 		-- isn't idle, even if nothing's been written to it yet.
 		clearPhantomChain(newNode)
@@ -809,7 +826,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 		end
 
 		return disconnect
-	end
+	end)
 
 	-- Shallow-merges the given table into this node's current table value, overwriting any
 	-- keys you provide and leaving everything else untouched. This is the easy way to update a
@@ -818,7 +835,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	-- If Settings was {volume = 100, brightness = 80}, it's now {volume = 50, brightness = 80}.
 	-- Only merges one level deep - it does NOT recursively merge nested tables inside the
 	-- values you pass. Only works on nodes that are currently table-shaped (or empty/unset).
-	newNode.Merge = function(t: {any})
+	rawset(newNode, "Merge", function(t: {any})
 		-- Safeguards
 
 		local data = newNode()
@@ -842,9 +859,9 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 		end
 		newNode(data)
 		return data
-	end
+	end)
 
-	newNode.WaitForChanged = function(): (T, T)
+	rawset(newNode, "WaitForChanged", function(): (T, T)
 		local thread = coroutine.running()
 		local disconnect
 		disconnect = newNode.Changed(function(old, new)
@@ -852,9 +869,9 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 			task.spawn(thread, old, new)
 		end) :: any
 		return coroutine.yield()
-	end
+	end)
 
-	newNode.WaitForKeyChanged = function(): (any, T, T)
+	rawset(newNode, "WaitForKeyChanged", function(): (any, T, T)
 
 		-- Safeguards
 
@@ -878,9 +895,9 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 			task.spawn(thread, key, old, new)
 		end) :: any
 		return coroutine.yield()
-	end
+	end)
 
-	newNode.WaitForChildAdded = function(): (any, T)
+	rawset(newNode, "WaitForChildAdded", function(): (any, T)
 
 		-- Safeguards
 
@@ -904,9 +921,9 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 			task.spawn(thread, key, new)
 		end) :: any
 		return coroutine.yield()
-	end
+	end)
 
-	newNode.WaitForChildRemoved = function(): (any, T)
+	rawset(newNode, "WaitForChildRemoved", function(): (any, T)
 
 		-- Safeguards
 
@@ -930,9 +947,9 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 			task.spawn(thread, key, old)
 		end) :: any
 		return coroutine.yield()
-	end
+	end)
 
-	newNode.Keys = function()
+	rawset(newNode, "Keys", function()
 
 		-- Safeguards
 
@@ -954,9 +971,9 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 			table.insert(keys, i)
 		end
 		return keys
-	end
+	end)
 
-	newNode.GetIndex = function(value: any)
+	rawset(newNode, "GetIndex", function(value: any)
 
 		-- Safeguards
 
@@ -988,7 +1005,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		keys = keys :: any
 		return keys
-	end
+	end)
 
 	-- Appends a value to the end of an array-shaped node - the table-friendly version of
 	-- table.insert.
@@ -996,7 +1013,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	-- Only works on nodes that are currently array-shaped (or empty/unset) - calling it on a
 	-- dict-shaped node (one with named keys) throws a clear error instead of silently
 	-- corrupting your data.
-	newNode.Insert = function(value: T)
+	rawset(newNode, "Insert", function(value: T)
 
 		-- Safeguards
 
@@ -1021,7 +1038,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 		table.insert(data, value)
 		newNode(data)
 		return data
-	end
+	end)
 
 	-- Removes matching VALUES (not positions) from an array-shaped node, up to `amount` times
 	-- (defaults to removing every match if you don't pass amount).
@@ -1029,7 +1046,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	--   GameState.Players[userId].Inventory.Items.RemoveValue("Sword", 1)    -- removes just the first one
 	-- If you already know the position instead of the value, use RemoveIndex below - it's more
 	-- direct and doesn't need to search.
-	newNode.RemoveValue = function(value: T, amount: number?)
+	rawset(newNode, "RemoveValue", function(value: T, amount: number?)
 
 		-- Safeguards
 
@@ -1078,7 +1095,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		newNode(data)
 		return data
-	end
+	end)
 
 	-- Removes whatever's at a specific position in an array-shaped node - the table-friendly
 	-- version of table.remove.
@@ -1086,7 +1103,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	-- Throws a clear error if the index is out of range, instead of Luau's default cryptic
 	-- "position out of bounds" error - so wrap this in pcall if the index came from somewhere
 	-- you're not 100% sure is still valid (e.g. a stale UI reference).
-	newNode.RemoveIndex = function(index: number)
+	rawset(newNode, "RemoveIndex", function(index: number)
 
 		-- Safeguards
 
@@ -1115,7 +1132,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 		table.remove(data, index)
 		newNode(data)
 		return data
-	end
+	end)
 
 	if decorate then
 		decorate(newNode)

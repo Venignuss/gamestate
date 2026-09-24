@@ -2,7 +2,7 @@
 local Node = require(script.ClientNode)
 local Template = require(script.Template)
 local GameState = Node.new("GameState", Template) :: Node.ClientNode<Template.Template>
-GameState.NIL = Node.NIL
+rawset(GameState, "NIL", Node.NIL)
 local SyncRemote = script:WaitForChild("SyncRemote")
 SyncRemote.OnClientEvent:Connect(function(batch: { any })
 	for _, entry in batch do
