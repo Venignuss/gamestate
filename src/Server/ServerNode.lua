@@ -337,7 +337,7 @@ local function decorateServer(node: any)
 			if connections[player] then
 				continue -- already synced, don't double-subscribe
 			end
-			local disconnect = node.Changed(function(old, new)
+			local disconnect = node.Changed(function(_old, new)
 				queueSync(path, player, new)
 			end)
 			queueSync(path, player, node())
