@@ -596,6 +596,13 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?): Node<T>
 				elseif typeof(data) ~= "table" then
 					rawset(t, "content", data)
 				else
+					-- An empty table has no children to trigger __index's "promote to table" logic,
+					-- so set the content explicitly, otherwise `{}` is silently stored as nil (or as
+					-- the old non-table value).
+					if typeof(rawget(t, "content")) ~= "table" then
+						rawset(t, "content", {})
+					end
+						
 					for i, v in data do
 						-- A key here that collides with a reserved node method (Insert, Merge,
 						-- Changed, ...) never actually reaches the "create a child" branch in
@@ -626,7 +633,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?): Node<T>
 					-- Remove removed keys
 					if typeof(oldData) == "table" then
 						for i, v in oldData do
-							if not data[i] then
+							if data[i] == nil then
 								t[i](nil, table.clone(firedKeyChangedCbs), table.clone(firedChangedCbs))
 							end
 						end

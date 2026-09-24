@@ -127,8 +127,8 @@ ServerNode.NIL = SharedNode.NIL
 ServerNode.configure = configure
 
 type ServerExtra = {
-	addSync: (Player | { Player }) -> (),
-	setSync: ({ Player }) -> (),
+	addSync: (Player | { Player }, { any }?) -> (),
+	setSync: ({ Player }, { any }?) -> (),
 	removeSync: (Player | { Player }) -> (),
 	allowClientBroadcast: (Player, ((any) -> boolean)?, { any }?) -> (),
 	disallowClientBroadcast: (Player) -> (),
@@ -312,6 +312,18 @@ local function assertIsPlayer(player: any)
 	)
 end
 
+local function pathsEqual(a: { any }, b: { any }): boolean
+	if #a ~= #b then
+		return false
+	end
+	for i = 1, #a do
+		if a[i] ~= b[i] then
+			return false
+		end
+	end
+	return true
+end
+
 -- This is where addSync/setSync/removeSync/allowClientBroadcast actually get implemented:
 local function decorateServer(node: any)
 	-- Starts replicating this node's value to the given player (or list of players) - every
@@ -323,18 +335,40 @@ local function decorateServer(node: any)
 	-- No need to clean this up when the player leaves - that happens automatically (see
 	-- PlayerRemoving below). You only need removeSync if you want to stop syncing to a player
 	-- who's still connected (e.g. they're no longer allowed to see this data).
-	rawset(node, "addSync", function(players: Player | { Player })
+	
+	-- `clientPath` (optional): the path the client stores this node's value under. Defaults to
+	-- the node's real server path. If you also call allowClientBroadcast on this node, pass the
+	-- same path there so the client's broadcastToServer addresses match.
+	-- A player already synced under a different path keeps their existing path (with a warning);
+	-- call removeSync first if you need to change it.
+	rawset(node, "addSync", function(players: Player | { Player }, clientPath: { any }?)
 		if typeof(players) ~= "table" then
 			players = { players }
 		end
+		assert(
+			clientPath == nil or typeof(clientPath) == "table",
+			"[GameState] addSync: clientPath must be a table (array of keys) or nil"
+		)
 		if not rawget(node, "_syncConnections") then
 			rawset(node, "_syncConnections", {})
 		end
+		if not rawget(node, "_syncPaths") then
+			rawset(node, "_syncPaths", {})
+		end
 		local connections = rawget(node, "_syncConnections")
-		local path = SharedNode.getNodePath(node) -- plain array, safe to capture below
+		local syncPaths = rawget(node, "_syncPaths")
+		local path = if clientPath then table.clone(clientPath) else SharedNode.getNodePath(node)
 		for _, player in players do
 			assertIsPlayer(player)
 			if connections[player] then
+				if not pathsEqual(syncPaths[player], path) then
+					warn(
+						"[GameState] addSync: "
+							.. player.Name
+							.. " is already synced to this node under a different path; keeping the existing one. "
+							.. "Call removeSync first to change it."
+					)
+				end
 				continue -- already synced, don't double-subscribe
 			end
 			local disconnect = node.Changed(function(_old, new)
@@ -342,23 +376,25 @@ local function decorateServer(node: any)
 			end)
 			queueSync(path, player, node())
 			connections[player] = disconnect
+			syncPaths[player] = path
 			SyncedNodes[node] = true
 		end
 	end)
 
-	-- Stops replicating this node to the given player(s) while they're still connected. If
-	-- they're leaving the game, you don't need to call this yourself - PlayerRemoving handles
-	-- it automatically.
 	rawset(node, "removeSync", function(players: Player | { Player })
 		if typeof(players) ~= "table" then
 			players = { players }
 		end
 		local connections = rawget(node, "_syncConnections")
+		local syncPaths = rawget(node, "_syncPaths")
 		for _, player in players do
 			assertIsPlayer(player)
 			if connections and connections[player] then
 				connections[player]()
 				connections[player] = nil
+			end
+			if syncPaths then
+				syncPaths[player] = nil
 			end
 		end
 		if connections and next(connections) == nil then
@@ -366,11 +402,7 @@ local function decorateServer(node: any)
 		end
 	end)
 
-	-- Sets the exact list of who this node syncs to, in one call - adds anyone missing and
-	-- removes anyone not in the list. Handy when "who should see this" changes as a whole
-	-- (e.g. a team/party roster), instead of manually diffing addSync/removeSync calls yourself.
-	--   GameState.Parties[partyId].SharedState.setSync(currentPartyMembers)
-	rawset(node, "setSync", function(players: { Player })
+	rawset(node, "setSync", function(players: { Player }, clientPath: { any }?)
 		local wanted = {}
 		for _, p in players do
 			wanted[p] = true
@@ -382,7 +414,7 @@ local function decorateServer(node: any)
 			end
 		end
 		for p in wanted do
-			node.addSync(p)
+			node.addSync(p, clientPath)
 		end
 	end)
 
@@ -582,13 +614,18 @@ Players.PlayerRemoving:Connect(function(player: Player)
 	for node in SyncedNodes do
 		local connections = rawget(node, "_syncConnections")
 		if connections and connections[player] then
-			connections[player]() -- disconnect the Changed subscription
+			connections[player]()
 			connections[player] = nil
+			local syncPaths = rawget(node, "_syncPaths")
+			if syncPaths then
+				syncPaths[player] = nil
+			end
 			if next(connections) == nil then
 				SyncedNodes[node] = nil
 			end
 		end
 	end
+	
 	for node in BroadcastableNodes do
 		local registry = rawget(node, "_broadcastRegistry")
 		if registry then
