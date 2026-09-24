@@ -15,7 +15,7 @@ SyncRemote.OnClientEvent:Connect(function(batch: { any })
 			target(entry.value)
 		end)
 		if not ok then
-			warn("[GameState] Error applying a synced update, skipping this entry: "..tostring(err))
+			warn("[GameState] Error applying a synced update, skipping this entry: " .. tostring(err))
 		end
 	end
 end)

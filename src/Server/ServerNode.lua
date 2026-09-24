@@ -15,7 +15,7 @@ if not SyncRemote then
 	SyncRemote.Parent = ClientFolder
 end
 SyncRemote = SyncRemote :: RemoteEvent
-type PendingSyncNode = { value: { path: {any}, value: any, seq: number }?, children: { [any]: PendingSyncNode }? }
+type PendingSyncNode = { value: { path: { any }, value: any, seq: number }?, children: { [any]: PendingSyncNode }? }
 local PendingSync: { [Player]: PendingSyncNode } = {}
 -- Monotonic counter stamped onto every queued sync write, across every path and every
 -- player. The trie below is keyed by PATH POSITION, not write order - a node's own queued
@@ -45,8 +45,8 @@ local SyncSequenceCounter = 0
 -- can enumerate "which nodes currently have a registration" without walking the
 -- whole tree - their values are ALWAYS the literal `true` marker, never a
 -- closure or anything else that could reference the node back.
-local SyncedNodes: { [any]: true } = setmetatable({}, {__mode = "k"}) :: any
-local BroadcastableNodes: { [any]: true } = setmetatable({}, {__mode = "k"}) :: any
+local SyncedNodes: { [any]: true } = setmetatable({}, { __mode = "k" }) :: any
+local BroadcastableNodes: { [any]: true } = setmetatable({}, { __mode = "k" }) :: any
 
 local BroadcastRemote = ClientFolder:FindFirstChild("BroadcastRemote") :: RemoteEvent?
 if not BroadcastRemote then
@@ -90,14 +90,14 @@ local Config = {
 local function configure(overrides: { [string]: number })
 	for key, value in overrides do
 		if Config[key] == nil then
-			warn("[GameState] configure(): unknown option '"..tostring(key).."', ignoring")
+			warn("[GameState] configure(): unknown option '" .. tostring(key) .. "', ignoring")
 		else
 			Config[key] = value
 		end
 	end
 end
 
-local BroadcastBuckets: { [Player]: { tokens: number, lastRefill: number } } = setmetatable({}, {__mode = "k"}) :: any
+local BroadcastBuckets: { [Player]: { tokens: number, lastRefill: number } } = setmetatable({}, { __mode = "k" }) :: any
 
 local function consumeBroadcastToken(player: Player): boolean
 	local bucket = BroadcastBuckets[player]
@@ -108,7 +108,10 @@ local function consumeBroadcastToken(player: Player): boolean
 	end
 	local elapsed = now - bucket.lastRefill
 	if elapsed > 0 then
-		bucket.tokens = math.min(Config.BROADCAST_BUCKET_CAPACITY, bucket.tokens + elapsed * Config.BROADCAST_BUCKET_REFILL_PER_SECOND)
+		bucket.tokens = math.min(
+			Config.BROADCAST_BUCKET_CAPACITY,
+			bucket.tokens + elapsed * Config.BROADCAST_BUCKET_REFILL_PER_SECOND
+		)
 		bucket.lastRefill = now
 	end
 	if bucket.tokens >= 1 then
@@ -124,10 +127,10 @@ ServerNode.NIL = SharedNode.NIL
 ServerNode.configure = configure
 
 type ServerExtra = {
-	addSync: (Player | {Player}) -> (),
-	setSync: ({Player}) -> (),
-	removeSync: (Player | {Player}) -> (),
-	allowClientBroadcast: (Player, ((any) -> boolean)?, {any}?) -> (),
+	addSync: (Player | { Player }) -> (),
+	setSync: ({ Player }) -> (),
+	removeSync: (Player | { Player }) -> (),
+	allowClientBroadcast: (Player, ((any) -> boolean)?, { any }?) -> (),
 	disallowClientBroadcast: (Player) -> (),
 }
 
@@ -149,7 +152,7 @@ export type ServerNode<T> = SharedNode.NodeType<T, ServerExtra>
 -- children (something was written further down), or both at once in the same frame -
 -- so `value` and `children` are kept as separate fields on each node instead of one
 -- overwriting the other.
-local function queueSync(path: {any}, player: Player, value: any)
+local function queueSync(path: { any }, player: Player, value: any)
 	if not PendingSync[player] then
 		PendingSync[player] = {}
 	end
@@ -189,9 +192,9 @@ end
 -- length) walk: registrations only ever need to be found along the exact chain of keys
 -- the client sent, nothing else is a candidate.
 type BroadcastTrieNode = { registration: any?, children: { [any]: BroadcastTrieNode }? }
-local BroadcastTrieRoot: { [Player]: BroadcastTrieNode } = setmetatable({}, {__mode = "k"}) :: any
+local BroadcastTrieRoot: { [Player]: BroadcastTrieNode } = setmetatable({}, { __mode = "k" }) :: any
 
-local function trieInsert(player: Player, path: {any}, registration: any)
+local function trieInsert(player: Player, path: { any }, registration: any)
 	local root = BroadcastTrieRoot[player]
 	if not root then
 		root = {}
@@ -210,7 +213,7 @@ local function trieInsert(player: Player, path: {any}, registration: any)
 	cursor.registration = registration
 end
 
-local function trieRemove(player: Player, path: {any})
+local function trieRemove(player: Player, path: { any })
 	local cursor = BroadcastTrieRoot[player]
 	if not cursor then
 		return
@@ -227,7 +230,7 @@ end
 -- Walks the player's trie along the message's path, remembering the DEEPEST registration
 -- seen along the way - a registration further down the path always wins over one closer
 -- to the root, matching the old scan's "longest matching prefix" behavior.
-local function trieFindBestMatch(player: Player, path: {any}): any?
+local function trieFindBestMatch(player: Player, path: { any }): any?
 	local cursor = BroadcastTrieRoot[player]
 	if not cursor then
 		return nil
@@ -303,7 +306,10 @@ local function reconstructAndValidate(registration: any, message: any): (boolean
 end
 
 local function assertIsPlayer(player: any)
-	assert(typeof(player) == "Instance" and player:IsA("Player"), "[GameState] expected a Player instance, got "..typeof(player))
+	assert(
+		typeof(player) == "Instance" and player:IsA("Player"),
+		"[GameState] expected a Player instance, got " .. typeof(player)
+	)
 end
 
 -- This is where addSync/setSync/removeSync/allowClientBroadcast actually get implemented:
@@ -317,9 +323,9 @@ local function decorateServer(node: any)
 	-- No need to clean this up when the player leaves - that happens automatically (see
 	-- PlayerRemoving below). You only need removeSync if you want to stop syncing to a player
 	-- who's still connected (e.g. they're no longer allowed to see this data).
-	rawset(node, "addSync", function(players: Player | {Player})
+	rawset(node, "addSync", function(players: Player | { Player })
 		if typeof(players) ~= "table" then
-			players = {players}
+			players = { players }
 		end
 		if not rawget(node, "_syncConnections") then
 			rawset(node, "_syncConnections", {})
@@ -343,9 +349,9 @@ local function decorateServer(node: any)
 	-- Stops replicating this node to the given player(s) while they're still connected. If
 	-- they're leaving the game, you don't need to call this yourself - PlayerRemoving handles
 	-- it automatically.
-	rawset(node, "removeSync", function(players: Player | {Player})
+	rawset(node, "removeSync", function(players: Player | { Player })
 		if typeof(players) ~= "table" then
-			players = {players}
+			players = { players }
 		end
 		local connections = rawget(node, "_syncConnections")
 		for _, player in players do
@@ -364,7 +370,7 @@ local function decorateServer(node: any)
 	-- removes anyone not in the list. Handy when "who should see this" changes as a whole
 	-- (e.g. a team/party roster), instead of manually diffing addSync/removeSync calls yourself.
 	--   GameState.Parties[partyId].SharedState.setSync(currentPartyMembers)
-	rawset(node, "setSync", function(players: {Player})
+	rawset(node, "setSync", function(players: { Player })
 		local wanted = {}
 		for _, p in players do
 			wanted[p] = true
@@ -394,45 +400,49 @@ local function decorateServer(node: any)
 	-- reminder). `clientPath` is optional and only needed if you want the client to address this
 	-- node by a different path than its real one server-side.
 	-- No need to clean this up when the player leaves - handled automatically.
-	rawset(node, "allowClientBroadcast", function(
-		player: Player,
-		validateData: ((any) -> boolean)?,
-		clientPath: {any}?
-	)
-		assertIsPlayer(player)
+	rawset(
+		node,
+		"allowClientBroadcast",
+		function(player: Player, validateData: ((any) -> boolean)?, clientPath: { any }?)
+			assertIsPlayer(player)
 
-		-- A registered broadcast target isn't "idle" even if nothing's been written
-		-- to it yet - without this, the node can get auto-detached shortly after
-		-- registration (existing idle-phantom cleanup), and once garbage collected,
-		-- this entire registration silently vanishes with it.
-		SharedNode.clearPhantomChain(node)
+			-- A registered broadcast target isn't "idle" even if nothing's been written
+			-- to it yet - without this, the node can get auto-detached shortly after
+			-- registration (existing idle-phantom cleanup), and once garbage collected,
+			-- this entire registration silently vanishes with it.
+			SharedNode.clearPhantomChain(node)
 
-		if not validateData then
-			local pathParts = {}
-			for _, key in SharedNode.getNodePath(node) do
-				table.insert(pathParts, tostring(key))
+			if not validateData then
+				local pathParts = {}
+				for _, key in SharedNode.getNodePath(node) do
+					table.insert(pathParts, tostring(key))
+				end
+				warn(
+					"[GameState] allowClientBroadcast for "
+						.. player.Name
+						.. " on GameState."
+						.. table.concat(pathParts, ".")
+						.. " has no validateData - any correctly-shaped value will be accepted from this "
+						.. "player as-is. Pass a validateData function unless you intend to fully trust this player's writes."
+				)
 			end
-			warn("[GameState] allowClientBroadcast for "..player.Name.." on GameState."..
-				table.concat(pathParts, ".")..
-				" has no validateData - any correctly-shaped value will be accepted from this "..
-				"player as-is. Pass a validateData function unless you intend to fully trust this player's writes.")
-		end
 
-		local path = SharedNode.getNodePath(node)
-		local registration = {
-			node = node,
-			validateData = validateData,
-			clientPath = clientPath,
-			path = clientPath or path,
-		}
+			local path = SharedNode.getNodePath(node)
+			local registration = {
+				node = node,
+				validateData = validateData,
+				clientPath = clientPath,
+				path = clientPath or path,
+			}
 
-		if not rawget(node, "_broadcastRegistry") then
-			rawset(node, "_broadcastRegistry", {})
+			if not rawget(node, "_broadcastRegistry") then
+				rawset(node, "_broadcastRegistry", {})
+			end
+			rawget(node, "_broadcastRegistry")[player] = registration
+			BroadcastableNodes[node] = true
+			trieInsert(player, clientPath or path, registration)
 		end
-		rawget(node, "_broadcastRegistry")[player] = registration
-		BroadcastableNodes[node] = true
-		trieInsert(player, clientPath or path, registration)
-	end)
+	)
 
 	-- Revokes a player's permission to broadcast-write to this node. Same as removeSync - you
 	-- only need this for revoking access from someone still connected; leaving players are
@@ -462,7 +472,6 @@ end
 
 task.spawn(function()
 	RunService.Heartbeat:Connect(function()
-
 		-- Syncing
 
 		for player, tree in PendingSync do
@@ -486,7 +495,7 @@ task.spawn(function()
 			for _, message in queue do
 				local entryOk, entryErr = pcall(function()
 					if typeof(message) ~= "table" or typeof(message.path) ~= "table" then
-						warn("[GameState] "..player.Name.." sent a malformed broadcast entry, discarding")
+						warn("[GameState] " .. player.Name .. " sent a malformed broadcast entry, discarding")
 						return
 					end
 
@@ -497,9 +506,14 @@ task.spawn(function()
 							return reconstructAndValidate(bestMatch, message)
 						end)
 						if not ok then
-							warn("[GameState] Error processing broadcast from "..player.Name..": "..tostring(approved))
+							warn(
+								"[GameState] Error processing broadcast from "
+									.. player.Name
+									.. ": "
+									.. tostring(approved)
+							)
 						elseif not approved then
-							warn("[GameState] "..player.Name.."'s broadcast failed validation, discarding")
+							warn("[GameState] " .. player.Name .. "'s broadcast failed validation, discarding")
 						else
 							bestMatch.node(reconstructed)
 						end
@@ -508,7 +522,12 @@ task.spawn(function()
 					end
 				end)
 				if not entryOk then
-					warn("[GameState] Unexpected error processing broadcast entry from "..player.Name..": "..tostring(entryErr))
+					warn(
+						"[GameState] Unexpected error processing broadcast entry from "
+							.. player.Name
+							.. ": "
+							.. tostring(entryErr)
+					)
 				end
 			end
 			PendingBroadcasts[player] = nil
@@ -518,12 +537,12 @@ end)
 
 BroadcastRemote.OnServerEvent:Connect(function(player: Player, queue: { any })
 	if not consumeBroadcastToken(player) then
-		warn("[GameState] "..player.Name.." exceeded broadcast call rate limit, dropping this call")
+		warn("[GameState] " .. player.Name .. " exceeded broadcast call rate limit, dropping this call")
 		return
 	end
 
 	if typeof(queue) ~= "table" then
-		warn("[GameState] "..player.Name.." sent a malformed broadcast queue, discarding")
+		warn("[GameState] " .. player.Name .. " sent a malformed broadcast queue, discarding")
 		return
 	end
 
@@ -533,19 +552,26 @@ BroadcastRemote.OnServerEvent:Connect(function(player: Player, queue: { any })
 	local existing = #PendingBroadcasts[player]
 	for i, entry in queue do
 		if existing + i > Config.MAX_BROADCASTS_PER_PLAYER_PER_FRAME then
-			warn("[GameState] "..player.Name.." exceeded broadcast rate limit, dropping excess")
+			warn("[GameState] " .. player.Name .. " exceeded broadcast rate limit, dropping excess")
 			break
 		end
 		if typeof(entry) ~= "table" or typeof(entry.path) ~= "table" then
-			warn("[GameState] "..player.Name.." sent a malformed broadcast entry, discarding")
+			warn("[GameState] " .. player.Name .. " sent a malformed broadcast entry, discarding")
 			continue
 		end
 		if #entry.path > Config.MAX_BROADCAST_PATH_LENGTH then
-			warn("[GameState] "..player.Name.." sent an oversized broadcast path, discarding")
+			warn("[GameState] " .. player.Name .. " sent an oversized broadcast path, discarding")
 			continue
 		end
-		if not isWithinDataLimits(entry.data, Config.MAX_BROADCAST_DATA_DEPTH, Config.MAX_BROADCAST_DATA_NODES, Config.MAX_BROADCAST_STRING_LENGTH) then
-			warn("[GameState] "..player.Name.." sent an oversized broadcast payload, discarding")
+		if
+			not isWithinDataLimits(
+				entry.data,
+				Config.MAX_BROADCAST_DATA_DEPTH,
+				Config.MAX_BROADCAST_DATA_NODES,
+				Config.MAX_BROADCAST_STRING_LENGTH
+			)
+		then
+			warn("[GameState] " .. player.Name .. " sent an oversized broadcast payload, discarding")
 			continue
 		end
 		table.insert(PendingBroadcasts[player], entry)

@@ -69,20 +69,20 @@ export type function NodeType(T, Extra)
 	local function finish()
 		local updateFn = types.newfunction()
 		updateFn:setparameters({ T })
-		updateFn:setreturns({T})
+		updateFn:setreturns({ T })
 
 		-- ONE signature, not two intersected ones. node() / node(value) / node(fn)
 		-- all go through this single call, with the choice folded into a union
 		-- inside the parameter instead of split across overloads.
 		local callFn = types.newfunction()
 		callFn:setparameters({ types.unionof(types.optional(T), updateFn) })
-		callFn:setreturns({T})
+		callFn:setreturns({ T })
 
 		-- .Update kept separately, still its own clean non-overloaded signature,
 		-- for cases where you want old to infer without manual annotation.
 		local update = types.newfunction()
 		update:setparameters({ updateFn })
-		update:setreturns({T})
+		update:setreturns({ T })
 		base:setproperty(types.singleton("Update"), update)
 
 		return types.intersectionof(base, callFn)
@@ -236,7 +236,9 @@ end
 export type Node<T> = NodeType<T, NoExtra>
 
 local function compareData(t1: any, t2: any)
-	if typeof(t1) ~= typeof(t2) then return false end
+	if typeof(t1) ~= typeof(t2) then
+		return false
+	end
 	if typeof(t1) ~= "table" then
 		return t1 == t2
 	end
@@ -266,7 +268,7 @@ local function anyAncestorSubscribed(node: any): boolean
 	return false
 end
 
-local function getNodePath(node: any): {any}
+local function getNodePath(node: any): { any }
 	local path = {}
 	local n = node
 	while n and n.Parent do
@@ -278,7 +280,7 @@ end
 
 Node.getNodePath = getNodePath
 
-local function getTableType(data: {[any]: any}): "any" | "array" | "dict"
+local function getTableType(data: { [any]: any }): "any" | "array" | "dict"
 	local count = 0
 	for _ in data do
 		count += 1
@@ -295,7 +297,7 @@ end
 -- Used only to describe a table in an error message. JSONEncode itself can throw
 -- (Instances, NaN/inf, some mixed-key shapes), which would otherwise mask the
 -- actual error we're trying to report with a confusing unrelated crash.
-local function safeDescribeTable(data: {[any]: any}): string
+local function safeDescribeTable(data: { [any]: any }): string
 	local ok, encoded = pcall(function()
 		return HTTPS:JSONEncode(data)
 	end)
@@ -305,13 +307,12 @@ local function safeDescribeTable(data: {[any]: any}): string
 	return tostring(data)
 end
 
-
-local DetachedChildren: any = setmetatable({}, {__mode = "k"})
+local DetachedChildren: any = setmetatable({}, { __mode = "k" })
 
 local function rememberDetached(parent: any, key: any, node: any)
 	local bucket = DetachedChildren[parent]
 	if not bucket then
-		bucket = setmetatable({}, {__mode = "v"})
+		bucket = setmetatable({}, { __mode = "v" })
 		DetachedChildren[parent] = bucket
 	end
 	bucket[key] = node
@@ -389,8 +390,8 @@ Node.clearPhantomChain = clearPhantomChain
 -- automatically the first time you access a path that doesn't exist yet, e.g. reading or
 -- writing GameState.Players[userId] for the first time creates that node on the spot -
 -- you never need to manually "declare" a path before using it.
-function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
-	local content : any = {}
+function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?): Node<T>
+	local content: any = {}
 	local isPhantom = (data == nil)
 	local newNode = setmetatable({}, {
 		__index = function(t: any, i)
@@ -460,10 +461,15 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 		-- go through rawset (which bypasses this), so this only ever fires for writes
 		-- coming from outside the module - exactly the case it's meant to catch.
 		__newindex = function(_t: any, i: any, _v: any)
-			error("[GameState] Can't assign directly to '"..tostring(i).."' on a GameState node. "..
-				"Use node(value) to write data, node."..tostring(i)..
-				"(...) to call a method, or node.Key(value) to write to a child - not "..
-				"node.Key = value.")
+			error(
+				"[GameState] Can't assign directly to '"
+					.. tostring(i)
+					.. "' on a GameState node. "
+					.. "Use node(value) to write data, node."
+					.. tostring(i)
+					.. "(...) to call a method, or node.Key(value) to write to a child - not "
+					.. "node.Key = value."
+			)
 		end,
 		-- Every node in the tree is called like a function to read or write it:
 		--   GameState.Players[userId].Coins()        -- read: returns the current value (nil if never set)
@@ -490,8 +496,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 			local argCount = select("#", ...)
 			if argCount > 0 then -- Writing to the node - change its content
 				reattachNode(t)
-				local data: any, firedKeyChangedCbs: {any}?,
-				firedChangedCbs: {any}? = ...
+				local data: any, firedKeyChangedCbs: { any }?, firedChangedCbs: { any }? = ...
 				firedKeyChangedCbs = firedKeyChangedCbs or {}
 				firedChangedCbs = firedChangedCbs or {}
 
@@ -555,7 +560,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 						curNode = curNode :: any
 						local curOldData = curNode()
 						if typeof(curNode.content) == "table" then
-							for i,v in curNode.content or {} do
+							for i, v in curNode.content or {} do
 								if rawget(v, "_isPhantom") then
 									curOldData[i] = nil
 								end
@@ -604,17 +609,23 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 						-- keys" section in the README.
 						local hasExistingChild = typeof(t.content) == "table" and rawget(t.content, i) ~= nil
 						if not hasExistingChild and typeof(rawget(t, i)) == "function" then
-							error("[GameState] Writing key '"..tostring(i).."' under '"..tostring(t.Key)..
-								"' - this collides with a reserved GameState method name, so '"..
-								tostring(i).."' would be called as that method instead of stored as "..
-								"a child, silently discarding the value instead of saving it. Rename "..
-								"the key, or see the README's 'Reserved keys' section.")
+							error(
+								"[GameState] Writing key '"
+									.. tostring(i)
+									.. "' under '"
+									.. tostring(t.Key)
+									.. "' - this collides with a reserved GameState method name, so '"
+									.. tostring(i)
+									.. "' would be called as that method instead of stored as "
+									.. "a child, silently discarding the value instead of saving it. Rename "
+									.. "the key, or see the README's 'Reserved keys' section."
+							)
 						end
 						t[i](v, table.clone(firedKeyChangedCbs), table.clone(firedChangedCbs))
 					end
 					-- Remove removed keys
 					if typeof(oldData) == "table" then
-						for i,v in oldData do
+						for i, v in oldData do
 							if not data[i] then
 								t[i](nil, table.clone(firedKeyChangedCbs), table.clone(firedChangedCbs))
 							end
@@ -690,8 +701,13 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] KeyChanged can only be used on a table-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] KeyChanged can only be used on a table-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 
 		-- Logic
@@ -739,8 +755,13 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] ChildAdded can only be used on a table-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] ChildAdded can only be used on a table-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 
 		-- Logic
@@ -774,8 +795,13 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] ChildRemoved can only be used on a table-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] ChildRemoved can only be used on a table-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 
 		-- Logic
@@ -803,7 +829,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	-- when you specifically want to know WHICH direct child changed. Returns a disconnect
 	-- function, same as KeyChanged. Remember the timing note above the read/write section:
 	-- inside this callback, use the `old`/`new` arguments - don't re-read the node itself.
-	rawset(newNode, "Changed", function(callback : (T, T) -> ())
+	rawset(newNode, "Changed", function(callback: (T, T) -> ())
 		-- Same reasoning as KeyChanged above: a live subscriber means this node
 		-- isn't idle, even if nothing's been written to it yet.
 		clearPhantomChain(newNode)
@@ -835,7 +861,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	-- If Settings was {volume = 100, brightness = 80}, it's now {volume = 50, brightness = 80}.
 	-- Only merges one level deep - it does NOT recursively merge nested tables inside the
 	-- values you pass. Only works on nodes that are currently table-shaped (or empty/unset).
-	rawset(newNode, "Merge", function(t: {any})
+	rawset(newNode, "Merge", function(t: { any })
 		-- Safeguards
 
 		local data = newNode()
@@ -845,13 +871,18 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] Merge can only be used on a table-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] Merge can only be used on a table-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 
 		-- Logic
 
-		for i,v in t do
+		for i, v in t do
 			if v == Node.NIL then
 				v = nil
 			end
@@ -872,7 +903,6 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	end)
 
 	rawset(newNode, "WaitForKeyChanged", function(): (any, T, T)
-
 		-- Safeguards
 
 		local data = newNode()
@@ -882,8 +912,13 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] WaitForKeyChanged can only be used on a table-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] WaitForKeyChanged can only be used on a table-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 
 		-- Logic
@@ -898,7 +933,6 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	end)
 
 	rawset(newNode, "WaitForChildAdded", function(): (any, T)
-
 		-- Safeguards
 
 		local data = newNode()
@@ -908,8 +942,13 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] WaitForChildAdded can only be used on a table-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] WaitForChildAdded can only be used on a table-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 
 		-- Logic
@@ -924,7 +963,6 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	end)
 
 	rawset(newNode, "WaitForChildRemoved", function(): (any, T)
-
 		-- Safeguards
 
 		local data = newNode()
@@ -934,8 +972,13 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] WaitForChildRemoved can only be used on a table-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] WaitForChildRemoved can only be used on a table-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 
 		-- Logic
@@ -950,7 +993,6 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	end)
 
 	rawset(newNode, "Keys", function()
-
 		-- Safeguards
 
 		local data = newNode()
@@ -960,21 +1002,25 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] Keys can only be used on a table-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] Keys can only be used on a table-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 
 		-- Logic
 
 		local keys = {}
-		for i,v in data do
+		for i, v in data do
 			table.insert(keys, i)
 		end
 		return keys
 	end)
 
 	rawset(newNode, "GetIndex", function(value: any)
-
 		-- Safeguards
 
 		local data = newNode()
@@ -984,14 +1030,19 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] GetIndex can only be used on a table-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] GetIndex can only be used on a table-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 
 		-- Logic
 
 		local keys = {}
-		for i,v in data do
+		for i, v in data do
 			if compareData(v, value) then
 				table.insert(keys, i)
 			end
@@ -1014,7 +1065,6 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	-- dict-shaped node (one with named keys) throws a clear error instead of silently
 	-- corrupting your data.
 	rawset(newNode, "Insert", function(value: T)
-
 		-- Safeguards
 
 		local data = newNode()
@@ -1024,13 +1074,23 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] Insert can only be used on an array-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] Insert can only be used on an array-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 		local tableDataType = getTableType(data)
 		if tableDataType == "dict" then
-			error("[GameState] Insert can only be used on an array-shaped node,"..
-				"got "..tableDataType..": "..safeDescribeTable(data))
+			error(
+				"[GameState] Insert can only be used on an array-shaped node,"
+					.. "got "
+					.. tableDataType
+					.. ": "
+					.. safeDescribeTable(data)
+			)
 		end
 
 		-- Logic
@@ -1047,7 +1107,6 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	-- If you already know the position instead of the value, use RemoveIndex below - it's more
 	-- direct and doesn't need to search.
 	rawset(newNode, "RemoveValue", function(value: T, amount: number?)
-
 		-- Safeguards
 
 		local data = newNode()
@@ -1057,13 +1116,23 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] RemoveValue can only be used on an array-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] RemoveValue can only be used on an array-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 		local tableDataType = getTableType(data)
 		if tableDataType == "dict" then
-			error("[GameState] RemoveValue can only be used on an array-shaped node,"..
-				"got "..tableDataType..": "..safeDescribeTable(data))
+			error(
+				"[GameState] RemoveValue can only be used on an array-shaped node,"
+					.. "got "
+					.. tableDataType
+					.. ": "
+					.. safeDescribeTable(data)
+			)
 		end
 
 		-- Logic
@@ -1071,7 +1140,7 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 		amount = amount or 1
 
 		local index
-		for i,v in data do
+		for i, v in data do
 			if compareData(v, value) then
 				index = i
 				break
@@ -1080,12 +1149,14 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local count = 0
 		while index and count < amount do
-			if not index then break end
+			if not index then
+				break
+			end
 			table.remove(data, index)
 			count += 1
 
 			index = nil
-			for i,v in data do
+			for i, v in data do
 				if compareData(v, value) then
 					index = i
 					break
@@ -1104,7 +1175,6 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 	-- "position out of bounds" error - so wrap this in pcall if the index came from somewhere
 	-- you're not 100% sure is still valid (e.g. a stale UI reference).
 	rawset(newNode, "RemoveIndex", function(index: number)
-
 		-- Safeguards
 
 		local data = newNode()
@@ -1114,17 +1184,26 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?) : Node<T>
 
 		local dataType = typeof(data)
 		if dataType ~= "table" then
-			error("[GameState] RemoveIndex can only be used on an array-shaped node,"..
-				"got "..dataType..": "..tostring(data))
+			error(
+				"[GameState] RemoveIndex can only be used on an array-shaped node,"
+					.. "got "
+					.. dataType
+					.. ": "
+					.. tostring(data)
+			)
 		end
 		local tableDataType = getTableType(data)
 		if tableDataType == "dict" then
-			error("[GameState] RemoveIndex can only be used on an array-shaped node,"..
-				"got "..tableDataType..": "..safeDescribeTable(data))
+			error(
+				"[GameState] RemoveIndex can only be used on an array-shaped node,"
+					.. "got "
+					.. tableDataType
+					.. ": "
+					.. safeDescribeTable(data)
+			)
 		end
 		if index < 1 or index > #data then
-			error(("[GameState] RemoveIndex: index %d is out of bounds for an array of length %d")
-				:format(index, #data))
+			error(("[GameState] RemoveIndex: index %d is out of bounds for an array of length %d"):format(index, #data))
 		end
 
 		-- Logic
