@@ -5,5 +5,5 @@
 
 [tools]
 wally = "UpliftGames/wally@0.3.2"
-stylua = "JohnnyMorganz/StyLua@0.20.0"
+stylua = "JohnnyMorganz/StyLua@2.5.2"
 selene = "Kampfkarren/selene@0.27.1"
