@@ -149,6 +149,13 @@ disconnect()
 - **`node.KeyChanged(callback)`** — fires when a *direct* child of this node is added, removed, or changed. `callback(key, old, new)`. Doesn't fire for grandchildren — subscribe at the level you actually care about.
 - **`node.ChildAdded(callback)`** — fires only when a direct child goes from not existing to existing. `callback(key, newValue)`.
 - **`node.ChildRemoved(callback)`** — fires only when a direct child goes from existing to being cleared. `callback(key, lastValue)`.
+- **`node.Observe(callback)`** — calls `callback(value, disconnect)` once immediately with the node's current value (`nil` if it's never been set), then again with the new value on every subsequent change. Unlike `Changed`, there's no `old` argument, since the initial call has no meaningful previous value. `disconnect` is passed into the callback (so it can unsubscribe itself, even during that initial call) and also returned by `Observe` — same function either way.
+
+  ```lua
+  GameState.Players[userId].Coins.Observe(function(coins)
+      updateCoinsLabel(coins)
+  end)
+  ```
 
 **Timing to know about:** these callbacks fire *before* the write is actually applied internally. The `old`/`new` values you're given are correct, but if your callback ignores those and reads the node again itself (`GameState.Round.TimeRemaining()` from inside that same `TimeRemaining.Changed` callback), you'll get the *old* value, not the one being written. Always use the arguments the callback hands you.
 
@@ -256,7 +263,7 @@ GameState.Players[userId].Coins = 100       -- wrong: throws an error now
 
 - **Don't call `broadcastToServer()` in a tight, unthrottled loop.** Nothing stops you locally, and it won't break anything (the server's own limits catch the excess), but it's still wasted client-side memory and network traffic for no benefit — batch your changes and broadcast once.
 
-- **Avoid these keys for *first-time* dynamic data** — they're reserved as method names on every node, and a key that collides with one is ambiguous: `Changed`, `KeyChanged`, `ChildAdded`, `ChildRemoved`, `Update`, `Merge`, `Insert`, `RemoveValue`, `RemoveIndex`, `Keys`, `GetIndex`, `WaitForChanged`, `WaitForKeyChanged`, `WaitForChildAdded`, `WaitForChildRemoved`, `NIL`, and, server/client-side only, `addSync`, `removeSync`, `setSync`, `allowClientBroadcast`, `disallowClientBroadcast`, `broadcastToServer`, `configure`.
+- **Avoid these keys for *first-time* dynamic data** — they're reserved as method names on every node, and a key that collides with one is ambiguous: `Changed`, `KeyChanged`, `ChildAdded`, `ChildRemoved`, `Observe`, `Update`, `Merge`, `Insert`, `RemoveValue`, `RemoveIndex`, `Keys`, `GetIndex`, `WaitForChanged`, `WaitForKeyChanged`, `WaitForChildAdded`, `WaitForChildRemoved`, `NIL`, and, server/client-side only, `addSync`, `removeSync`, `setSync`, `allowClientBroadcast`, `disallowClientBroadcast`, `broadcastToServer`, `configure`.
 
   If a node *already has real data* stored under one of these keys, reading it back (`node.Insert`, `node["Insert"]`, etc.) correctly returns that data, not the method — existing data is never shadowed. The ambiguity only bites the *first* write to a brand-new key: `GameState.Players[id].Items.Insert(x)` when `Items` has no child named `Insert` yet calls the `Insert` *method* on `Items` (appending `x` to `Items` itself), not "create a child named `Insert` and write `x` to it." Writing a whole table where one of the keys collides (`GameState.Items({ Insert = "sword" })`) throws an error when this happens, since both the key and value are known at that point and continuing would silently discard the value instead of saving it — a bare `node.Insert(x)` call can't be flagged the same way, since it's indistinguishable from an intentional method call. If your data is keyed by something outside your control (an item name a player typed, an arbitrary string ID, etc.), guard against it colliding with the list above before using it as a `GameState` key.
 

@@ -57,6 +57,20 @@ export type function NodeType(T, Extra)
 	waitForChanged:setreturns({ T, T })
 	base:setproperty(types.singleton("WaitForChanged"), waitForChanged)
 
+	local observeDisconnectArg = types.newfunction()
+	observeDisconnectArg:setparameters({})
+	observeDisconnectArg:setreturns({})
+	local observeCb = types.newfunction()
+	observeCb:setparameters({ types.optional(T), observeDisconnectArg })
+	observeCb:setreturns({})
+	local observeDisconnectRet = types.newfunction()
+	observeDisconnectRet:setparameters({})
+	observeDisconnectRet:setreturns({})
+	local observe = types.newfunction()
+	observe:setparameters({ observeCb })
+	observe:setreturns({ observeDisconnectRet })
+	base:setproperty(types.singleton("Observe"), observe)
+
 	-- Merge in any caller-supplied extra properties (e.g. ServerNode's
 	-- addSync/setSync/...) directly onto this SAME table object, so named
 	-- properties always take precedence over any indexer added later.
@@ -596,13 +610,11 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?): Node<T>
 				elseif typeof(data) ~= "table" then
 					rawset(t, "content", data)
 				else
-					-- An empty table has no children to trigger __index's "promote to table" logic,
-					-- so set the content explicitly, otherwise `{}` is silently stored as nil (or as
-					-- the old non-table value).
+					-- An empty table has no children to trigger __index's promotion to a table
 					if typeof(rawget(t, "content")) ~= "table" then
 						rawset(t, "content", {})
 					end
-						
+
 					for i, v in data do
 						-- A key here that collides with a reserved node method (Insert, Merge,
 						-- Changed, ...) never actually reaches the "create a child" branch in
@@ -856,6 +868,43 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?): Node<T>
 			if #callbacks == 0 then
 				rawset(newNode, "_changedCallbacks", nil)
 			end
+		end
+
+		return disconnect
+	end)
+
+	-- Calls callback(value, disconnect) once immediately with the current value (nil if unset),
+	-- then again with the new value on every change. `disconnect` is both passed to the callback
+	-- and returned, so the callback can unsubscribe itself even during the initial call.
+	--   GameState.Players[userId].Coins.Observe(function(coins, disconnect) ... end)
+	rawset(newNode, "Observe", function(callback: (any, () -> ()) -> ())
+		-- Read before subscribing: Changed clears the phantom flag, and a phantom reads as nil.
+		local initial = if rawget(newNode, "_isPhantom") then nil else newNode()
+
+		local disconnected = false
+		local disconnectChanged: (() -> ())? = nil
+
+		local function disconnect()
+			if disconnected then
+				return
+			end
+			disconnected = true
+			if disconnectChanged then
+				disconnectChanged()
+			end
+		end
+
+		disconnectChanged = newNode.Changed(function(_old, new)
+			if disconnected then
+				return
+			end
+			callback(new, disconnect)
+		end)
+
+		local ok, err = pcall(callback, initial, disconnect)
+		if not ok then
+			disconnect()
+			error(err, 0)
 		end
 
 		return disconnect
