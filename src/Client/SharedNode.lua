@@ -606,7 +606,23 @@ function Node.new<T>(key: any, data: T, decorate: ((any) -> ())?): Node<T>
 				if data == nil then
 					-- Explicitly clear this node back to empty
 					rawset(t, "content", nil)
-					detachNode(t)
+					-- A node with an active Changed/KeyChanged subscription must stay
+					-- reachable through its parent's `content` table (a strong
+					-- reference). detachNode() would instead park it in
+					-- DetachedChildren, whose buckets are weak-valued - the node's
+					-- callbacks live as fields ON the node itself, so with no other
+					-- strong reference left, it becomes a self-contained garbage
+					-- cycle the GC is free to collect at any point before the next
+					-- write. If that happens, the next write creates a brand-new
+					-- node via Node.new with empty _changedCallbacks/
+					-- _keyChangedCallbacks, silently dropping every subscriber with
+					-- no error. Only truly idle (unsubscribed) nodes are safe to
+					-- hand off to the weak cache.
+					if rawget(t, "_changedCallbacks") or rawget(t, "_keyChangedCallbacks") then
+						rawset(t, "_isDetached", nil)
+					else
+						detachNode(t)
+					end
 				elseif typeof(data) ~= "table" then
 					rawset(t, "content", data)
 				else
